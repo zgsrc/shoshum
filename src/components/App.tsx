@@ -12,6 +12,7 @@ import {
   detectLineEnding,
   convertLineEnding,
   decodeWithEncoding,
+  detectBOM,
   isBinaryByContent,
   isBinaryByExtension,
   SUPPORTED_ENCODINGS,
@@ -19,6 +20,7 @@ import {
   toBlob,
 } from "@/lib/fileUtils";
 import {
+  extractArchiveEntries,
   extractArchiveEntry,
   isInvalidArchivePasswordError,
   loadArchiveData,
@@ -30,7 +32,7 @@ import { getRecentFiles, addRecentFile, clearRecentFiles, type RecentFile } from
 import { prettyPrintJSON, minifyJSON, prettyPrintXML, minifyXML } from "@/lib/formatters";
 import type { TestFixture, TestFixtureId } from "@/lib/testFixtures";
 import ArchiveBrowser from "@/components/ArchiveBrowser";
-import CodeEditor, { type CodeEditorRef } from "./CodeEditor";
+import CodeEditor, { type CodeEditorRef, type EditorSnapshot } from "./CodeEditor";
 import DisplayViewer from "./DisplayViewer";
 import HexViewer from "./HexViewer";
 import MarkdownPreview from "./MarkdownPreview";
@@ -42,6 +44,7 @@ import DiffView from "./DiffView";
 import ShortcutGuide from "./ShortcutGuide";
 import PasswordPrompt from "./PasswordPrompt";
 import TestFixturePanel from "./TestFixturePanel";
+import GlobalSearch, { type SearchableTab } from "./GlobalSearch";
 
 type ViewMode = "auto" | "archive" | "display" | "text" | "binary";
 type EffectiveViewMode = Exclude<ViewMode, "auto">;
@@ -215,8 +218,15 @@ async function writeArchiveEntryToDirectory(
   entryPath: string,
   bytes: Uint8Array
 ): Promise<void> {
-  const parts = entryPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  const parts = entryPath
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.replace(/[\u0000-\u001f\u007f]/g, ""))
+    .filter(Boolean);
   if (parts.length === 0) return;
+  if (parts.some((part) => part === "." || part === "..")) {
+    throw new Error(`"${entryPath}" could not be exported safely.`);
+  }
 
   let directory = root;
   for (const part of parts.slice(0, -1)) {
@@ -439,6 +449,7 @@ export default function App() {
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
   const [isDragging, setIsDragging] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+  const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [archivePasswordPrompt, setArchivePasswordPrompt] = useState<ArchivePasswordPromptState | null>(null);
   const [testMode, setTestMode] = useState<TestModeConfig>({ enabled: false, autoFixtureId: null });
   const [testFixtures, setTestFixtures] = useState<
@@ -450,8 +461,19 @@ export default function App() {
   const editorRef = useRef<CodeEditorRef>(null);
   const archivePasswordsRef = useRef<Record<string, string>>({});
   const autoLoadedFixtureRef = useRef<TestFixtureId | null>(null);
+  const editorSnapshotsRef = useRef<Record<string, EditorSnapshot>>({});
 
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
+
+  const switchTab = useCallback((newId: string) => {
+    if (activeTabId && activeTabId !== newId) {
+      const snapshot = editorRef.current?.takeSnapshot();
+      if (snapshot) {
+        editorSnapshotsRef.current[activeTabId] = snapshot;
+      }
+    }
+    setActiveTabId(newId);
+  }, [activeTabId]);
 
   useEffect(() => {
     setRecentFiles(getRecentFiles());
@@ -523,6 +545,7 @@ export default function App() {
     }
 
     delete archivePasswordsRef.current[id];
+    delete editorSnapshotsRef.current[id];
     setArchivePasswordPrompt((current) =>
       current?.archiveTabId === id ? null : current
     );
@@ -535,8 +558,18 @@ export default function App() {
     setTabs([]);
     setActiveTabId(null);
     archivePasswordsRef.current = {};
+    editorSnapshotsRef.current = {};
     setArchivePasswordPrompt(null);
   }, [tabs]);
+
+  const reorderTabs = useCallback((fromIdx: number, toIdx: number) => {
+    setTabs((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  }, []);
 
   // ── File operations ─────────────────────────────
 
@@ -568,7 +601,9 @@ export default function App() {
       const isBinary = isBinaryByExtension(name) || isBinaryByContent(bytes);
       const format: FileFormat =
         detectedFormat === "text" && isBinary ? "binary" : detectedFormat;
-      const text = isBinary ? "" : decodeWithEncoding(bytes, encoding);
+      const bom = !isBinary ? detectBOM(bytes) : null;
+      const resolvedEncoding = bom ? bom.encoding : encoding;
+      const text = isBinary ? "" : decodeWithEncoding(bytes, resolvedEncoding);
       const archiveData =
         format === "archive" ? await loadArchiveData(name, bytes) : null;
       const nextReadOnly = readOnly || format === "archive";
@@ -598,7 +633,7 @@ export default function App() {
         originalContent: text,
         modified: false,
         viewMode: format === "archive" ? "archive" : "auto",
-        encoding,
+        encoding: resolvedEncoding,
         markdownMode: "edit",
         readOnly: nextReadOnly,
         readOnlyReason,
@@ -615,7 +650,7 @@ export default function App() {
       const sourceKey = `fixture:${fixtureId}`;
       const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
       if (existing) {
-        setActiveTabId(existing.id);
+        switchTab(existing.id);
         return;
       }
 
@@ -640,7 +675,7 @@ export default function App() {
         window.alert(getErrorMessage(error));
       }
     },
-    [tabs, buildTabFromBytes]
+    [tabs, buildTabFromBytes, switchTab]
   );
 
   const saveBytesAsFile = useCallback(
@@ -772,7 +807,7 @@ export default function App() {
       const sourceKey = `${archiveTab.id}:${entry.path}`;
       const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
       if (existing) {
-        setActiveTabId(existing.id);
+        switchTab(existing.id);
         return;
       }
 
@@ -822,7 +857,7 @@ export default function App() {
         window.alert(getErrorMessage(error));
       }
     },
-    [tabs, buildTabFromBytes]
+    [tabs, buildTabFromBytes, switchTab]
   );
 
   const openArchiveEntry = useCallback(
@@ -832,7 +867,7 @@ export default function App() {
       const sourceKey = `${archiveTab.id}:${entry.path}`;
       const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
       if (existing) {
-        setActiveTabId(existing.id);
+        switchTab(existing.id);
         return;
       }
 
@@ -853,7 +888,7 @@ export default function App() {
 
       void openArchiveEntryWithPassword(archiveTab, entry, cachedPassword);
     },
-    [tabs, openArchiveEntryWithPassword]
+    [tabs, openArchiveEntryWithPassword, switchTab]
   );
 
   const exportArchiveEntriesWithPassword = useCallback(
@@ -866,17 +901,12 @@ export default function App() {
       if (!archiveTab.archiveData || entries.length === 0) return;
 
       try {
-        const extractedEntries: { path: string; bytes: Uint8Array }[] = [];
-
-        for (const entry of entries) {
-          const bytes = await extractArchiveEntry(
-            archiveTab.fileData.bytes,
-            archiveTab.archiveData,
-            entry.path,
-            entry.encrypted ? password : undefined
-          );
-          extractedEntries.push({ path: entry.path, bytes });
-        }
+        const extractedEntries = await extractArchiveEntries(
+          archiveTab.fileData.bytes,
+          archiveTab.archiveData,
+          entries.map((entry) => entry.path),
+          entries.some((entry) => entry.encrypted) ? password : undefined
+        );
 
         if (password && entries.some((entry) => entry.encrypted)) {
           archivePasswordsRef.current[archiveTab.id] = password;
@@ -1158,6 +1188,7 @@ export default function App() {
     if (mod && e.key === "w") { e.preventDefault(); if (activeTabId) closeTab(activeTabId); }
     if (mod && e.key === "g") { e.preventDefault(); if (activeTab && !activeTab.fileData.isBinary) setShowGoToLine(true); }
     if (mod && e.shiftKey && e.key === "P") { e.preventDefault(); setShowCommandPalette(true); }
+    if (mod && e.shiftKey && e.key === "F") { e.preventDefault(); setShowGlobalSearch(true); }
     if (!mod && !e.shiftKey && e.key === "?" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.closest?.(".cm-editor"))) {
       e.preventDefault(); setShowShortcuts((v) => !v);
     }
@@ -1165,20 +1196,20 @@ export default function App() {
       e.preventDefault();
       if (tabs.length >= 2 && activeTabId) {
         const idx = tabs.findIndex((t) => t.id === activeTabId);
-        setActiveTabId(tabs[(idx + 1) % tabs.length].id);
+        switchTab(tabs[(idx + 1) % tabs.length].id);
       }
     }
     if (mod && e.key === "[") {
       e.preventDefault();
       if (tabs.length >= 2 && activeTabId) {
         const idx = tabs.findIndex((t) => t.id === activeTabId);
-        setActiveTabId(tabs[(idx - 1 + tabs.length) % tabs.length].id);
+        switchTab(tabs[(idx - 1 + tabs.length) % tabs.length].id);
       }
     }
     if (mod && !e.shiftKey && e.key >= "1" && e.key <= "9") {
       e.preventDefault();
       const idx = parseInt(e.key) - 1;
-      if (idx < tabs.length) setActiveTabId(tabs[idx].id);
+      if (idx < tabs.length) switchTab(tabs[idx].id);
     }
   };
 
@@ -1228,6 +1259,7 @@ export default function App() {
       );
     }
     cmds.push(
+      { id: "search-files", label: "Search Across Open Files", shortcut: "⌘⇧F", action: () => setShowGlobalSearch(true) },
       { id: "theme", label: `Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`, action: toggleTheme },
       { id: "settings", label: "Open Settings", action: () => setShowSettings(true) },
       { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "?", action: () => setShowShortcuts(true) },
@@ -1270,6 +1302,17 @@ export default function App() {
 
   const lineEnding: LineEnding | null = activeTab && !activeTab.fileData.isBinary ? detectLineEnding(activeTab.currentContent) : null;
   const tabInfos: TabInfo[] = tabs.map((t) => ({ id: t.id, name: t.fileData.name, modified: t.modified }));
+  const searchableTabs: SearchableTab[] = useMemo(
+    () => tabs.filter((t) => !t.fileData.isBinary).map((t) => ({ id: t.id, name: t.fileData.name, content: t.currentContent })),
+    [tabs]
+  );
+
+  const handleSearchSelect = useCallback((tabId: string, lineNumber: number) => {
+    switchTab(tabId);
+    requestAnimationFrame(() => {
+      editorRef.current?.goToLine(lineNumber);
+    });
+  }, [switchTab]);
 
   // ── Render ──────────────────────────────────────
 
@@ -1288,7 +1331,7 @@ export default function App() {
         />
       ) : (
         <>
-          <TabBar tabs={tabInfos} activeId={activeTabId} onSelect={setActiveTabId} onClose={closeTab} onNewTab={handleOpen} />
+          <TabBar tabs={tabInfos} activeId={activeTabId} onSelect={switchTab} onClose={closeTab} onNewTab={handleOpen} onReorder={reorderTabs} />
           {activeTab && <ActiveTabView
             key={activeTab.id}
             tab={activeTab}
@@ -1297,6 +1340,7 @@ export default function App() {
             cursorPos={cursorPos}
             lineEnding={lineEnding}
             editorRef={editorRef}
+            editorSnapshot={editorSnapshotsRef.current[activeTab.id] ?? null}
             onToggleTheme={toggleTheme}
             onUpdateTab={updateTab}
             onOpen={handleOpen}
@@ -1332,6 +1376,13 @@ export default function App() {
         />
       )}
       {showShortcuts && <ShortcutGuide onClose={() => setShowShortcuts(false)} />}
+      {showGlobalSearch && (
+        <GlobalSearch
+          tabs={searchableTabs}
+          onSelectMatch={handleSearchSelect}
+          onClose={() => setShowGlobalSearch(false)}
+        />
+      )}
       {testMode.enabled && (
         <TestFixturePanel
           fixtures={testFixtures}
@@ -1366,13 +1417,14 @@ function getEffectiveMode(tab: Tab): EffectiveViewMode {
   return "text";
 }
 
-function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onExportArchiveEntry, onExportArchiveEntries, onShowCommands, onShowShortcuts }: {
+function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, editorSnapshot, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onExportArchiveEntry, onExportArchiveEntries, onShowCommands, onShowShortcuts }: {
   tab: Tab;
   theme: Theme;
   settings: Settings;
   cursorPos: { line: number; col: number };
   lineEnding: LineEnding | null;
   editorRef: React.RefObject<CodeEditorRef | null>;
+  editorSnapshot: EditorSnapshot | null;
   onToggleTheme: () => void;
   onUpdateTab: (id: string, patch: Partial<Tab>) => void;
   onOpen: () => void;
@@ -1516,6 +1568,7 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
                 wordWrap={settings.wordWrap} fontSize={settings.fontSize} tabSize={settings.tabSize}
                 showLineNumbers={settings.lineNumbers} showMinimap={settings.minimap}
                 readOnly={tab.readOnly}
+                initialSnapshot={editorSnapshot}
                 onChange={(c) => onUpdateTab(tab.id, { currentContent: c, modified: true })}
                 onCursorChange={(l, c) => onCursorChange({ line: l, col: c })} />
             </div>
@@ -1528,6 +1581,7 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
             wordWrap={settings.wordWrap} fontSize={settings.fontSize} tabSize={settings.tabSize}
             showLineNumbers={settings.lineNumbers} showMinimap={settings.minimap}
             readOnly={tab.readOnly}
+            initialSnapshot={editorSnapshot}
             onChange={(c) => onUpdateTab(tab.id, { currentContent: c, modified: true })}
             onCursorChange={(l, c) => onCursorChange({ line: l, col: c })} />
         )}

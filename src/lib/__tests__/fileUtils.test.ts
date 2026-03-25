@@ -10,6 +10,7 @@ import {
   isBinaryByContent,
   isArchiveFile,
   decodeWithEncoding,
+  detectBOM,
   toBlob,
 } from "../fileUtils";
 
@@ -244,5 +245,42 @@ describe("toBlob", () => {
     const sub = full.subarray(2, 4);
     const blob = toBlob(sub);
     expect(blob.size).toBe(2);
+  });
+});
+
+describe("detectBOM", () => {
+  it("detects UTF-8 BOM", () => {
+    const bytes = new Uint8Array([0xEF, 0xBB, 0xBF, 0x48, 0x65, 0x6C]);
+    const result = detectBOM(bytes);
+    expect(result).toEqual({ encoding: "utf-8", bomLength: 3 });
+  });
+
+  it("detects UTF-16LE BOM", () => {
+    const bytes = new Uint8Array([0xFF, 0xFE, 0x48, 0x00]);
+    const result = detectBOM(bytes);
+    expect(result).toEqual({ encoding: "utf-16le", bomLength: 2 });
+  });
+
+  it("detects UTF-16BE BOM", () => {
+    const bytes = new Uint8Array([0xFE, 0xFF, 0x00, 0x48]);
+    const result = detectBOM(bytes);
+    expect(result).toEqual({ encoding: "utf-16be", bomLength: 2 });
+  });
+
+  it("returns null for no BOM", () => {
+    const bytes = new Uint8Array([0x48, 0x65, 0x6C, 0x6C, 0x6F]);
+    expect(detectBOM(bytes)).toBeNull();
+  });
+
+  it("returns null for empty bytes", () => {
+    expect(detectBOM(new Uint8Array([]))).toBeNull();
+  });
+
+  it("returns null for single byte", () => {
+    expect(detectBOM(new Uint8Array([0xEF]))).toBeNull();
+  });
+
+  it("returns null for partial UTF-8 BOM (2 bytes)", () => {
+    expect(detectBOM(new Uint8Array([0xEF, 0xBB]))).toBeNull();
   });
 });

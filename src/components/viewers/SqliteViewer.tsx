@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { SqlJsDatabase } from "sql.js";
 import PreviewMessage from "./PreviewMessage";
 
 interface SqliteViewerProps {
@@ -20,11 +21,6 @@ interface QueryResult {
   rowCount: number | null;
 }
 
-interface SqliteDatabase {
-  exec: (sql: string) => Array<{ columns: unknown[]; values: unknown[][] }>;
-  close: () => void;
-}
-
 const MAX_ROWS = 200;
 const SQLITE_WASM_URL = new URL(
   "../../../node_modules/sql.js/dist/sql-wasm-browser.wasm",
@@ -32,7 +28,7 @@ const SQLITE_WASM_URL = new URL(
 ).toString();
 
 export default function SqliteViewer({ bytes, name }: SqliteViewerProps) {
-  const databaseRef = useRef<SqliteDatabase | null>(null);
+  const databaseRef = useRef<SqlJsDatabase | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
@@ -44,9 +40,7 @@ export default function SqliteViewer({ bytes, name }: SqliteViewerProps) {
 
     const openDatabase = async () => {
       try {
-        const initSqlJs = (await import("sql.js")).default as (
-          options?: { locateFile?: (file: string) => string }
-        ) => Promise<{ Database: new (data?: Uint8Array) => SqliteDatabase }>;
+        const { default: initSqlJs } = await import("sql.js");
         const SQL = await initSqlJs({
           locateFile: () => SQLITE_WASM_URL,
         });

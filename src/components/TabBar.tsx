@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 
 export interface TabInfo {
   id: string;
@@ -14,15 +14,42 @@ interface TabBarProps {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
+  onReorder: (fromIndex: number, toIndex: number) => void;
 }
 
-export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab }: TabBarProps) {
+export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab, onReorder }: TabBarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
+  const [dragState, setDragState] = useState<{ dragIdx: number; overIdx: number } | null>(null);
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeId]);
+
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
+    setDragState({ dragIdx: idx, overIdx: idx });
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragState((prev) => prev ? { ...prev, overIdx: idx } : null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, toIdx: number) => {
+    e.preventDefault();
+    const fromIdx = dragState?.dragIdx;
+    setDragState(null);
+    if (fromIdx != null && fromIdx !== toIdx) {
+      onReorder(fromIdx, toIdx);
+    }
+  }, [dragState, onReorder]);
+
+  const handleDragEnd = useCallback(() => {
+    setDragState(null);
+  }, []);
 
   return (
     <div
@@ -30,12 +57,18 @@ export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab }: 
       style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}
     >
       <div ref={scrollRef} className="flex items-center flex-1 overflow-x-auto min-w-0 scrollbar-none">
-        {tabs.map((tab) => {
+        {tabs.map((tab, idx) => {
           const isActive = tab.id === activeId;
+          const isDragOver = dragState !== null && dragState.overIdx === idx && dragState.dragIdx !== idx;
           return (
             <button
               key={tab.id}
               ref={isActive ? activeRef : null}
+              draggable
+              onDragStart={(e) => handleDragStart(e, idx)}
+              onDragOver={(e) => handleDragOver(e, idx)}
+              onDrop={(e) => handleDrop(e, idx)}
+              onDragEnd={handleDragEnd}
               className="flex items-center gap-1.5 h-9 px-3 text-xs font-mono shrink-0 border-r transition-colors group"
               style={{
                 backgroundColor: isActive ? "var(--sh-bg)" : "transparent",
@@ -43,6 +76,8 @@ export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab }: 
                 borderColor: "var(--sh-border)",
                 borderBottom: isActive ? "1px solid var(--sh-bg)" : "1px solid var(--sh-border)",
                 marginBottom: "-1px",
+                borderLeft: isDragOver ? "2px solid var(--sh-accent-blue)" : undefined,
+                opacity: dragState?.dragIdx === idx ? 0.4 : 1,
               }}
               onClick={() => onSelect(tab.id)}
             >

@@ -24,6 +24,7 @@ import {
   defaultKeymap,
   history,
   historyKeymap,
+  historyField,
   indentWithTab,
 } from "@codemirror/commands";
 import {
@@ -340,9 +341,16 @@ async function getLanguageExtension(
   }
 }
 
+export interface EditorSnapshot {
+  json: unknown;
+  scrollTop: number;
+}
+
 export interface CodeEditorRef {
   replaceContent: (text: string) => void;
   goToLine: (line: number) => void;
+  takeSnapshot: () => EditorSnapshot | null;
+  restoreSnapshot: (snapshot: EditorSnapshot) => void;
 }
 
 interface CodeEditorProps {
@@ -355,6 +363,7 @@ interface CodeEditorProps {
   tabSize?: number;
   showLineNumbers?: boolean;
   showMinimap?: boolean;
+  initialSnapshot?: EditorSnapshot | null;
   onChange?: (content: string) => void;
   onCursorChange?: (line: number, col: number) => void;
 }
@@ -371,6 +380,7 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
       tabSize = 2,
       showLineNumbers = true,
       showMinimap = false,
+      initialSnapshot = null,
       onChange,
       onCursorChange,
     },
@@ -383,6 +393,7 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
     const contentRef = useRef(content);
     const isExternalUpdateRef = useRef(false);
     const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
+    const snapshotRef = useRef<EditorSnapshot | null>(initialSnapshot);
     const [minimapTick, setMinimapTick] = useState(0);
 
     useEffect(() => {
@@ -421,6 +432,17 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
             });
             view.focus();
           }
+        },
+        takeSnapshot: (): EditorSnapshot | null => {
+          const view = viewRef.current;
+          if (!view) return null;
+          return {
+            json: view.state.toJSON({ history: historyField }),
+            scrollTop: view.scrollDOM.scrollTop,
+          };
+        },
+        restoreSnapshot: (snapshot: EditorSnapshot) => {
+          snapshotRef.current = snapshot;
         },
       }),
       []
@@ -501,19 +523,36 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
       if (langExt) extensions.push(langExt);
       if (readOnly) extensions.push(EditorState.readOnly.of(true));
 
-      const state = EditorState.create({ doc: contentRef.current, extensions });
+      const snapshot = snapshotRef.current;
+      snapshotRef.current = null;
+
+      const state = snapshot
+        ? EditorState.fromJSON(
+            snapshot.json as Record<string, unknown>,
+            { extensions },
+            { history: historyField }
+          )
+        : EditorState.create({ doc: contentRef.current, extensions });
 
       viewRef.current = new EditorView({
         state,
         parent: containerRef.current,
       });
 
+      if (snapshot && snapshot.scrollTop > 0) {
+        requestAnimationFrame(() => {
+          viewRef.current?.scrollDOM.scrollTo(0, snapshot.scrollTop);
+        });
+      }
+
       if (showMinimap && minimapCanvasRef.current && viewRef.current) {
         drawMinimap(minimapCanvasRef.current, viewRef.current, theme);
       }
 
       if (onCursorRef.current) {
-        onCursorRef.current(1, 1);
+        const pos = state.selection.main.head;
+        const line = state.doc.lineAt(pos);
+        onCursorRef.current(line.number, pos - line.from + 1);
       }
     }, [format, theme, readOnly, wordWrap, fontSize, tabSize, showLineNumbers, showMinimap]);
 

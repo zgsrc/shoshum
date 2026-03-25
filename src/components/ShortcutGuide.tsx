@@ -40,6 +40,7 @@ const SECTIONS: { title: string; shortcuts: { keys: string; label: string }[] }[
     title: "View",
     shortcuts: [
       { keys: "⌘ ⇧ P", label: "Command palette" },
+      { keys: "⌘ ⇧ F", label: "Search across files" },
       { keys: "?", label: "Keyboard shortcuts" },
     ],
   },

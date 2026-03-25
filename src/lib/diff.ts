@@ -14,12 +14,7 @@ export interface DiffStats {
 export function computeDiff(original: string, modified: string): DiffLine[] {
   const oldLines = original.split("\n");
   const newLines = modified.split("\n");
-
-  if (oldLines.length > 5000 || newLines.length > 5000) {
-    return simpleDiff(oldLines, newLines);
-  }
-
-  return lcsDiff(oldLines, newLines);
+  return myersDiff(oldLines, newLines);
 }
 
 export function getDiffStats(lines: DiffLine[]): DiffStats {
@@ -32,63 +27,177 @@ export function getDiffStats(lines: DiffLine[]): DiffStats {
   return { added, removed, same };
 }
 
-function simpleDiff(oldLines: string[], newLines: string[]): DiffLine[] {
-  const result: DiffLine[] = [];
-  const maxLen = Math.max(oldLines.length, newLines.length);
+/**
+ * Myers diff algorithm — O(ND) time, O(N) space where D is the edit distance.
+ * Far faster and more memory-efficient than the previous O(NM) LCS approach
+ * for inputs that are mostly similar (small D).
+ */
+function myersDiff(oldLines: string[], newLines: string[]): DiffLine[] {
+  const n = oldLines.length;
+  const m = newLines.length;
+  const max = n + m;
 
-  for (let i = 0; i < maxLen; i++) {
-    if (i < oldLines.length && i < newLines.length) {
-      if (oldLines[i] === newLines[i]) {
-        result.push({ type: "same", content: oldLines[i], oldLineNum: i + 1, newLineNum: i + 1 });
+  if (max === 0) {
+    return [];
+  }
+
+  // Fast path: identical
+  if (n === m) {
+    let identical = true;
+    for (let i = 0; i < n; i++) {
+      if (oldLines[i] !== newLines[i]) { identical = false; break; }
+    }
+    if (identical) {
+      return oldLines.map((line, i) => ({
+        type: "same" as const,
+        content: line,
+        oldLineNum: i + 1,
+        newLineNum: i + 1,
+      }));
+    }
+  }
+
+  // Fast path: one side empty
+  if (n === 0) {
+    return newLines.map((line, i) => ({
+      type: "added" as const,
+      content: line,
+      newLineNum: i + 1,
+    }));
+  }
+  if (m === 0) {
+    return oldLines.map((line, i) => ({
+      type: "removed" as const,
+      content: line,
+      oldLineNum: i + 1,
+    }));
+  }
+
+  const editScript = shortestEdit(oldLines, newLines, n, m, max);
+  return buildDiffLines(oldLines, newLines, editScript);
+}
+
+type Edit = { type: "same" | "added" | "removed"; oldIdx: number; newIdx: number };
+
+function shortestEdit(
+  oldLines: string[],
+  newLines: string[],
+  n: number,
+  m: number,
+  max: number,
+): Edit[] {
+  // v[k] = furthest reaching x on diagonal k
+  // diagonals range from -max to +max, indexed as k + offset
+  const size = 2 * max + 1;
+  const v = new Int32Array(size);
+  const offset = max;
+
+  // Store the trace for backtracking
+  const trace: Int32Array[] = [];
+
+  outer:
+  for (let d = 0; d <= max; d++) {
+    const snapshot = new Int32Array(v);
+    trace.push(snapshot);
+
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && v[k - 1 + offset] < v[k + 1 + offset])) {
+        x = v[k + 1 + offset]; // move down (insert)
       } else {
-        result.push({ type: "removed", content: oldLines[i], oldLineNum: i + 1 });
-        result.push({ type: "added", content: newLines[i], newLineNum: i + 1 });
+        x = v[k - 1 + offset] + 1; // move right (delete)
       }
-    } else if (i < oldLines.length) {
-      result.push({ type: "removed", content: oldLines[i], oldLineNum: i + 1 });
+
+      let y = x - k;
+
+      // Follow the snake (diagonal of matches)
+      while (x < n && y < m && oldLines[x] === newLines[y]) {
+        x++;
+        y++;
+      }
+
+      v[k + offset] = x;
+
+      if (x >= n && y >= m) {
+        break outer;
+      }
+    }
+  }
+
+  // Backtrack to build the edit script
+  const edits: Edit[] = [];
+  let x = n;
+  let y = m;
+
+  for (let d = trace.length - 1; d >= 0; d--) {
+    const k = x - y;
+    const prev = trace[d];
+
+    let prevK: number;
+    if (k === -d || (k !== d && prev[k - 1 + offset] < prev[k + 1 + offset])) {
+      prevK = k + 1;
     } else {
-      result.push({ type: "added", content: newLines[i], newLineNum: i + 1 });
+      prevK = k - 1;
+    }
+
+    const prevX = prev[prevK + offset];
+    const prevY = prevX - prevK;
+
+    // Record the snake (diagonal matches) in reverse
+    while (x > prevX && y > prevY) {
+      x--;
+      y--;
+      edits.push({ type: "same", oldIdx: x, newIdx: y });
+    }
+
+    if (d > 0) {
+      if (x === prevX) {
+        // Insert
+        y--;
+        edits.push({ type: "added", oldIdx: x, newIdx: y });
+      } else {
+        // Delete
+        x--;
+        edits.push({ type: "removed", oldIdx: x, newIdx: y });
+      }
+    }
+  }
+
+  edits.reverse();
+  return edits;
+}
+
+function buildDiffLines(
+  oldLines: string[],
+  newLines: string[],
+  edits: Edit[],
+): DiffLine[] {
+  const result: DiffLine[] = [];
+  let oldNum = 1;
+  let newNum = 1;
+
+  for (const edit of edits) {
+    if (edit.type === "same") {
+      result.push({
+        type: "same",
+        content: oldLines[edit.oldIdx],
+        oldLineNum: oldNum++,
+        newLineNum: newNum++,
+      });
+    } else if (edit.type === "removed") {
+      result.push({
+        type: "removed",
+        content: oldLines[edit.oldIdx],
+        oldLineNum: oldNum++,
+      });
+    } else {
+      result.push({
+        type: "added",
+        content: newLines[edit.newIdx],
+        newLineNum: newNum++,
+      });
     }
   }
 
   return result;
-}
-
-function lcsDiff(oldLines: string[], newLines: string[]): DiffLine[] {
-  const n = oldLines.length;
-  const m = newLines.length;
-
-  const dp: number[][] = [];
-  for (let i = 0; i <= n; i++) {
-    dp[i] = new Array(m + 1).fill(0);
-  }
-
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  const temp: DiffLine[] = [];
-  let i = n, j = m;
-  let oldNum = n, newNum = m;
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      temp.push({ type: "same", content: oldLines[i - 1], oldLineNum: oldNum, newLineNum: newNum });
-      i--; j--; oldNum--; newNum--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      temp.push({ type: "added", content: newLines[j - 1], newLineNum: newNum });
-      j--; newNum--;
-    } else {
-      temp.push({ type: "removed", content: oldLines[i - 1], oldLineNum: oldNum });
-      i--; oldNum--;
-    }
-  }
-
-  return temp.reverse();
 }

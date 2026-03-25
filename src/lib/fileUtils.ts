@@ -594,6 +594,19 @@ export function convertLineEnding(text: string, to: "LF" | "CRLF"): string {
   return normalized.replace(/\n/g, "\r\n");
 }
 
+export function detectBOM(bytes: Uint8Array): { encoding: Encoding; bomLength: number } | null {
+  if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+    return { encoding: "utf-8", bomLength: 3 };
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+    return { encoding: "utf-16le", bomLength: 2 };
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+    return { encoding: "utf-16be", bomLength: 2 };
+  }
+  return null;
+}
+
 export function decodeWithEncoding(bytes: Uint8Array, encoding: string): string {
   const decoder = new TextDecoder(encoding, { fatal: false });
   return decoder.decode(bytes);

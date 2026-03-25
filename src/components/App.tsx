@@ -1294,7 +1294,7 @@ export default function App() {
     }
     cmds.push(
       { id: "search-files", label: "Search Across Open Files", shortcut: "⌘⇧F", action: () => setShowGlobalSearch(true) },
-      { id: "theme", label: `Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`, action: toggleTheme },
+      { id: "theme", label: `Theme: ${themePreference} (cycle to ${themePreference === "auto" ? "light" : themePreference === "light" ? "dark" : "auto"})`, action: toggleTheme },
       { id: "settings", label: "Open Settings", action: () => setShowSettings(true) },
       { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "?", action: () => setShowShortcuts(true) },
     );
@@ -1330,7 +1330,7 @@ export default function App() {
       }
     }
     return cmds;
-  }, [activeTab, theme, settings, handleOpen, handleSave, closeTab, closeAllTabs, toggleTheme, handleFormat, handleMinify, handleCompareWithSaved, handleConvertLineEndings, handleChangeEncoding, handleSettingsChange, updateTab]);
+  }, [activeTab, themePreference, settings, handleOpen, handleSave, closeTab, closeAllTabs, toggleTheme, handleFormat, handleMinify, handleCompareWithSaved, handleConvertLineEndings, handleChangeEncoding, handleSettingsChange, updateTab]);
 
   // ── Derived state ───────────────────────────────
 
@@ -1358,7 +1358,7 @@ export default function App() {
         <LandingPage
           onFile={loadFile}
           onOpenPicker={handleOpen}
-          theme={theme}
+          themePreference={themePreference}
           onToggleTheme={toggleTheme}
           recentFiles={recentFiles}
           onClearRecent={() => { clearRecentFiles(); setRecentFiles([]); }}
@@ -1370,6 +1370,7 @@ export default function App() {
             key={activeTab.id}
             tab={activeTab}
             theme={theme}
+            themePreference={themePreference}
             settings={settings}
             cursorPos={cursorPos}
             lineEnding={lineEnding}
@@ -1451,9 +1452,10 @@ function getEffectiveMode(tab: Tab): EffectiveViewMode {
   return "text";
 }
 
-function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, editorSnapshot, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onExportArchiveEntry, onExportArchiveEntries, onShowCommands, onShowShortcuts }: {
+function ActiveTabView({ tab, theme, themePreference, settings, cursorPos, lineEnding, editorRef, editorSnapshot, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onExportArchiveEntry, onExportArchiveEntries, onShowCommands, onShowShortcuts }: {
   tab: Tab;
-  theme: Theme;
+  theme: ResolvedTheme;
+  themePreference: ThemePreference;
   settings: Settings;
   cursorPos: { line: number; col: number };
   lineEnding: LineEnding | null;
@@ -1554,8 +1556,8 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
           <TBtn onClick={onShowShortcuts} title="Keyboard Shortcuts (?)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
           </TBtn>
-          <TBtn onClick={onToggleTheme} title={`${theme === "dark" ? "Light" : "Dark"} mode`}>
-            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+          <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
+            {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
           </TBtn>
           <TBtn onClick={onClose} title="Close tab">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>

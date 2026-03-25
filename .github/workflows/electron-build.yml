@@ -24,12 +24,10 @@ jobs:
         run: npm ci
 
       - name: Build static export
-        run: NEXT_OUTPUT=export npx next build
+        run: npm run electron:build-web
 
       - name: Build Electron (macOS)
-        run: npx electron-builder --config electron-builder.config.js --mac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --config electron-builder.config.js --mac --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -54,12 +52,10 @@ jobs:
         run: npm ci
 
       - name: Build static export
-        run: npx cross-env NEXT_OUTPUT=export npx next build
+        run: npm run electron:build-web
 
       - name: Build Electron (Windows)
-        run: npx electron-builder --config electron-builder.config.js --win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --config electron-builder.config.js --win --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -83,12 +79,10 @@ jobs:
         run: npm ci
 
       - name: Build static export
-        run: NEXT_OUTPUT=export npx next build
+        run: npm run electron:build-web
 
       - name: Build Electron (Linux)
-        run: npx electron-builder --config electron-builder.config.js --linux
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --config electron-builder.config.js --linux --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

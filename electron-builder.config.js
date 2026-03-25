@@ -20,6 +20,7 @@ module.exports = {
       { target: "dmg", arch: ["universal"] },
       { target: "zip", arch: ["universal"] },
     ],
+    artifactName: "Shoshum-mac-universal.${ext}",
     category: "public.app-category.developer-tools",
     darkModeSupport: true,
     hardenedRuntime: true,
@@ -37,10 +38,14 @@ module.exports = {
     ],
   },
   nsis: {
+    artifactName: "Shoshum-Setup-${arch}.${ext}",
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,
     deleteAppDataOnUninstall: true,
+  },
+  portable: {
+    artifactName: "Shoshum-Portable-${arch}.${ext}",
   },
   linux: {
     target: [
@@ -49,6 +54,12 @@ module.exports = {
     ],
     category: "Development;Utility",
     maintainer: "zgsrc",
+  },
+  appImage: {
+    artifactName: "Shoshum-linux-${arch}.AppImage",
+  },
+  deb: {
+    artifactName: "shoshum-linux-${arch}.deb",
   },
   fileAssociations: [
     {

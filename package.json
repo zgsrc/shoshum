@@ -14,12 +14,12 @@
     "clean": "rm -rf .next .turbo node_modules/.cache out dist-electron",
     "test": "vitest run",
     "test:watch": "vitest",
-    "electron:dev": "ELECTRON_DEV=1 electron .",
-    "electron:build-web": "NEXT_OUTPUT=export next build",
-    "electron:build": "npm run electron:build-web && electron-builder --config electron-builder.config.js",
-    "electron:build:mac": "npm run electron:build-web && electron-builder --config electron-builder.config.js --mac",
-    "electron:build:win": "npm run electron:build-web && electron-builder --config electron-builder.config.js --win",
-    "electron:build:linux": "npm run electron:build-web && electron-builder --config electron-builder.config.js --linux"
+    "electron:dev": "cross-env ELECTRON_DEV=1 electron .",
+    "electron:build-web": "cross-env NEXT_OUTPUT=export next build",
+    "electron:build": "npm run electron:build-web && electron-builder --config electron-builder.config.js --publish never",
+    "electron:build:mac": "npm run electron:build-web && electron-builder --config electron-builder.config.js --mac --publish never",
+    "electron:build:win": "npm run electron:build-web && electron-builder --config electron-builder.config.js --win --publish never",
+    "electron:build:linux": "npm run electron:build-web && electron-builder --config electron-builder.config.js --linux --publish never"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

@@ -44,16 +44,11 @@ export default function ArchiveBrowser({
   onExportEntry,
   onExportEntries,
 }: ArchiveBrowserProps) {
+  const tree = useMemo(() => buildArchiveTree(archive.entries), [archive.entries]);
   const [query, setQuery] = useState("");
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
-    const initial = new Set<string>();
-    for (const entry of archive.entries) {
-      if (entry.directory) {
-        initial.add(entry.path);
-      }
-    }
-    return initial;
-  });
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() =>
+    collectInitialExpandedPaths(tree)
+  );
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
     () => new Set()
   );
@@ -62,11 +57,14 @@ export default function ArchiveBrowser({
     () => archive.entries.filter((entry) => !entry.directory),
     [archive.entries]
   );
-  const tree = useMemo(() => buildArchiveTree(archive.entries), [archive.entries]);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredTree = useMemo(
     () => filterTree(tree, normalizedQuery),
     [tree, normalizedQuery]
+  );
+  const allExportableEntries = useMemo(
+    () => collectExportableEntries(tree),
+    [tree]
   );
   const forcedExpandedPaths = useMemo(
     () => collectDirectoryPaths(filteredTree),
@@ -118,10 +116,11 @@ export default function ArchiveBrowser({
                 label="Export All"
                 onClick={() =>
                   onExportEntries(
-                    collectExportableEntries(tree),
-                    archiveName.replace(/\.[^.]+$/, "")
+                    allExportableEntries,
+                    "all"
                   )
                 }
+                disabled={allExportableEntries.length === 0}
               />
             )}
             <div
@@ -552,6 +551,27 @@ function collectDirectoryPaths(nodes: ArchiveTreeNode[]): Set<string> {
 
   for (const node of nodes) {
     visit(node);
+  }
+
+  return result;
+}
+
+function collectInitialExpandedPaths(nodes: ArchiveTreeNode[]): Set<string> {
+  const result = new Set<string>();
+
+  for (const node of nodes) {
+    if (!node.directory) continue;
+    result.add(node.path);
+
+    let current: ArchiveTreeNode | undefined = node;
+    while (
+      current &&
+      current.children.length === 1 &&
+      current.children[0]?.directory
+    ) {
+      current = current.children[0];
+      result.add(current.path);
+    }
   }
 
   return result;

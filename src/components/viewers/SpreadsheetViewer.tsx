@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatBytes, toBlob } from "@/lib/fileUtils";
+import {
+  buildWorkbookPreview,
+  getSpreadsheetPreviewUnsupportedReason,
+  MAX_SPREADSHEET_PREVIEW_BYTES,
+  type ParsedWorkbookSheet,
+  type WorkbookPreview,
+} from "@/lib/spreadsheetUtils";
 import PreviewMessage from "./PreviewMessage";
 
 interface SpreadsheetViewerProps {
   bytes: Uint8Array;
   name: string;
-}
-
-interface WorkbookPreview {
-  sheets: string[];
-  tables: Record<string, string[][]>;
 }
 
 const MAX_ROWS = 250;
@@ -26,27 +29,38 @@ export default function SpreadsheetViewer({ bytes, name }: SpreadsheetViewerProp
 
     const loadWorkbook = async () => {
       try {
-        const XLSX = await import("xlsx");
-        const workbook = XLSX.read(bytes.slice().buffer as ArrayBuffer, { type: "array" });
-        const tables: Record<string, string[][]> = {};
-
-        for (const sheetName of workbook.SheetNames as string[]) {
-          const sheet = workbook.Sheets[sheetName];
-          const rows = XLSX.utils.sheet_to_json(sheet, {
-            header: 1,
-            raw: false,
-            blankrows: false,
-          }) as unknown[][];
-          tables[sheetName] = rows.map((row) =>
-            row.map((value) => (value == null ? "" : String(value)))
+        if (bytes.byteLength > MAX_SPREADSHEET_PREVIEW_BYTES) {
+          throw new Error(
+            `Spreadsheet previews are limited to ${formatBytes(MAX_SPREADSHEET_PREVIEW_BYTES)} for stability.`
           );
         }
 
+        const unsupportedReason = getSpreadsheetPreviewUnsupportedReason(name);
+        if (unsupportedReason) {
+          throw new Error(unsupportedReason);
+        }
+
+        const { default: readXlsxFile, readSheetNames } = await import(
+          "read-excel-file/browser"
+        );
+        const workbookBlob = toBlob(bytes, "application/octet-stream");
+        const sheetNames = await readSheetNames(workbookBlob);
+        const worksheets: ParsedWorkbookSheet[] = [];
+
+        for (const sheetName of sheetNames) {
+          const rows = await readXlsxFile(workbookBlob, {
+            sheet: sheetName,
+            trim: false,
+          });
+          worksheets.push({
+            name: sheetName,
+            rows,
+          });
+        }
+
+        const nextPreview = buildWorkbookPreview(worksheets);
+
         if (!disposed) {
-          const nextPreview = {
-            sheets: workbook.SheetNames as string[],
-            tables,
-          };
           setPreview(nextPreview);
           setSelectedSheet(nextPreview.sheets[0] ?? null);
           setError(null);
@@ -66,7 +80,7 @@ export default function SpreadsheetViewer({ bytes, name }: SpreadsheetViewerProp
     return () => {
       disposed = true;
     };
-  }, [bytes]);
+  }, [bytes, name]);
 
   const rows = useMemo(() => {
     if (!preview || !selectedSheet) return [];

@@ -25,6 +25,11 @@ export interface ArchiveData {
   tarBytes?: Uint8Array;
 }
 
+export interface ExtractedArchiveEntry {
+  path: string;
+  bytes: Uint8Array;
+}
+
 export async function loadArchiveData(
   fileName: string,
   bytes: Uint8Array
@@ -77,55 +82,38 @@ export async function extractArchiveEntry(
   entryPath: string,
   password?: string
 ): Promise<Uint8Array> {
-  const entry = archiveData.entries.find(
-    (candidate) => !candidate.directory && candidate.path === entryPath
+  const [entry] = await extractArchiveEntries(
+    archiveBytes,
+    archiveData,
+    [entryPath],
+    password
   );
+  return entry.bytes;
+}
 
-  if (!entry) {
-    throw new Error(`Couldn't find "${entryPath}" in this archive.`);
-  }
-
-  if (entry.encrypted) {
-    if (!password) {
-      throw new Error("This ZIP entry requires a password.");
-    }
-  }
-
-  if (entry.size > MAX_ARCHIVE_ENTRY_BYTES) {
-    throw new Error(
-      `"${entry.path}" is ${formatBytes(entry.size)}, which is above the ${formatBytes(MAX_ARCHIVE_ENTRY_BYTES)} extraction limit.`
-    );
-  }
+export async function extractArchiveEntries(
+  archiveBytes: Uint8Array,
+  archiveData: ArchiveData,
+  entryPaths: string[],
+  password?: string
+): Promise<ExtractedArchiveEntry[]> {
+  const entries = resolveRequestedEntries(archiveData, entryPaths, password);
+  if (entries.length === 0) return [];
 
   if (isZipArchiveKind(archiveData.kind)) {
-    return readZipEntry(archiveBytes, entry.path, password);
+    return readZipEntriesData(archiveBytes, entries, password);
   }
 
   if (isLibarchiveKind(archiveData.kind)) {
-    return readLibarchiveEntry(
+    return readLibarchiveEntriesData(
       archiveData.sourceName ?? `archive.${archiveData.kind}`,
       archiveBytes,
-      entry.path,
+      entries,
       password
     );
   }
 
-  const tarBytes =
-    archiveData.tarBytes ??
-    (archiveData.kind === "tgz"
-      ? await gunzipArchive(archiveBytes)
-      : archiveBytes);
-
-  const dataOffset = entry.dataOffset;
-  if (dataOffset == null) {
-    throw new Error(`"${entry.path}" could not be extracted from this TAR archive.`);
-  }
-
-  if (dataOffset + entry.size > tarBytes.length) {
-    throw new Error(`"${entry.path}" extends past the TAR archive boundary.`);
-  }
-
-  return tarBytes.slice(dataOffset, dataOffset + entry.size);
+  return readTarEntriesData(archiveBytes, archiveData, entries);
 }
 
 export function isInvalidArchivePasswordError(error: unknown): boolean {
@@ -156,7 +144,7 @@ async function readZipEntries(bytes: Uint8Array): Promise<ArchiveEntrySummary[]>
 
     return entries
       .map((entry) => ({
-        path: normalizeArchivePath(entry.filename, entry.directory),
+        path: normalizeArchivePath(entry.filename),
         size: entry.uncompressedSize,
         compressedSize: entry.compressedSize,
         directory: entry.directory,
@@ -174,11 +162,11 @@ async function readZipEntries(bytes: Uint8Array): Promise<ArchiveEntrySummary[]>
   }
 }
 
-async function readZipEntry(
+async function readZipEntriesData(
   bytes: Uint8Array,
-  entryPath: string,
+  requestedEntries: ArchiveEntrySummary[],
   password?: string
-): Promise<Uint8Array> {
+): Promise<ExtractedArchiveEntry[]> {
   const { BlobReader, ZipReader, ERR_INVALID_PASSWORD } = await import("@zip.js/zip.js");
   const reader = new ZipReader(new BlobReader(toBlob(bytes)), {
     useWebWorkers: false,
@@ -186,41 +174,41 @@ async function readZipEntry(
 
   try {
     const entries = await reader.getEntries();
-    const entry = entries.find(
-      (candidate) =>
-        !candidate.directory &&
-        normalizeArchivePath(candidate.filename, false) === entryPath
+    const fileEntryMap = new Map(
+      entries
+        .filter((candidate) => !candidate.directory)
+        .map((candidate) => [
+          normalizeArchivePath(candidate.filename),
+          candidate,
+        ])
     );
 
-    if (!entry || entry.directory) {
-      throw new Error(`Couldn't find "${entryPath}" in this ZIP archive.`);
-    }
+    const extractedEntries: ExtractedArchiveEntry[] = [];
+    for (const requestedEntry of requestedEntries) {
+      const entry = fileEntryMap.get(requestedEntry.path);
+      if (!entry || entry.directory) {
+        throw new Error(`Couldn't find "${requestedEntry.path}" in this ZIP archive.`);
+      }
 
-    if (entry.encrypted) {
-      if (!password) {
-        throw new Error("This ZIP entry requires a password.");
+      try {
+        const buffer = await entry.arrayBuffer(
+          requestedEntry.encrypted && password
+            ? { useWebWorkers: false, password }
+            : { useWebWorkers: false }
+        );
+        extractedEntries.push({
+          path: requestedEntry.path,
+          bytes: new Uint8Array(buffer),
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === ERR_INVALID_PASSWORD) {
+          throw new Error(INVALID_ARCHIVE_PASSWORD_MESSAGE);
+        }
+        throw error;
       }
     }
 
-    if (entry.uncompressedSize > MAX_ARCHIVE_ENTRY_BYTES) {
-      throw new Error(
-        `"${entry.filename}" is ${formatBytes(entry.uncompressedSize)}, which is above the ${formatBytes(MAX_ARCHIVE_ENTRY_BYTES)} extraction limit.`
-      );
-    }
-
-    try {
-      const buffer = await entry.arrayBuffer(
-        password
-          ? { useWebWorkers: false, password }
-          : { useWebWorkers: false }
-      );
-      return new Uint8Array(buffer);
-    } catch (error) {
-      if (error instanceof Error && error.message === ERR_INVALID_PASSWORD) {
-        throw new Error(INVALID_ARCHIVE_PASSWORD_MESSAGE);
-      }
-      throw error;
-    }
+    return extractedEntries;
   } finally {
     try {
       await reader.close();
@@ -259,8 +247,7 @@ async function readLibarchiveEntries(
         if (!compressedFile?.name) return acc;
 
         const path = normalizeArchivePath(
-          `${typeof item.path === "string" ? item.path : ""}${compressedFile.name}`,
-          false
+          `${typeof item.path === "string" ? item.path : ""}${compressedFile.name}`
         );
         if (!path) return acc;
 
@@ -285,12 +272,12 @@ async function readLibarchiveEntries(
   }
 }
 
-async function readLibarchiveEntry(
+async function readLibarchiveEntriesData(
   fileName: string,
   bytes: Uint8Array,
-  entryPath: string,
+  requestedEntries: ArchiveEntrySummary[],
   password?: string
-): Promise<Uint8Array> {
+): Promise<ExtractedArchiveEntry[]> {
   const { Archive } = await import("libarchive.js");
   const archive = await Archive.open(
     new File([toBlob(bytes)], fileName, { type: "application/octet-stream" })
@@ -301,9 +288,17 @@ async function readLibarchiveEntry(
       await archive.usePassword(password);
     }
 
-    const file = await archive.extractSingleFile(entryPath);
-    const buffer = await file.arrayBuffer();
-    return new Uint8Array(buffer);
+    const extractedEntries: ExtractedArchiveEntry[] = [];
+    for (const requestedEntry of requestedEntries) {
+      const file = await archive.extractSingleFile(requestedEntry.path);
+      const buffer = await file.arrayBuffer();
+      extractedEntries.push({
+        path: requestedEntry.path,
+        bytes: new Uint8Array(buffer),
+      });
+    }
+
+    return extractedEntries;
   } catch (error) {
     if (looksLikeInvalidArchivePassword(error)) {
       throw new Error(INVALID_ARCHIVE_PASSWORD_MESSAGE);
@@ -379,7 +374,7 @@ function readTarEntries(tarBytes: Uint8Array): ArchiveEntrySummary[] {
         ? Number(appliedPax.mtime)
         : Number(mtimeFromHeader);
       let path = appliedPax.path ?? nextLongPath ?? headerName;
-      path = normalizeArchivePath(path, typeFlag === "5");
+      path = normalizeArchivePath(path);
 
       if (path) {
         const directory = typeFlag === "5" || path.endsWith("/");
@@ -417,6 +412,34 @@ function readTarEntries(tarBytes: Uint8Array): ArchiveEntrySummary[] {
   }
 
   return entries.sort(compareArchiveEntries);
+}
+
+async function readTarEntriesData(
+  archiveBytes: Uint8Array,
+  archiveData: ArchiveData,
+  requestedEntries: ArchiveEntrySummary[]
+): Promise<ExtractedArchiveEntry[]> {
+  const tarBytes =
+    archiveData.tarBytes ??
+    (archiveData.kind === "tgz"
+      ? await gunzipArchive(archiveBytes)
+      : archiveBytes);
+
+  return requestedEntries.map((entry) => {
+    const dataOffset = entry.dataOffset;
+    if (dataOffset == null) {
+      throw new Error(`"${entry.path}" could not be extracted from this TAR archive.`);
+    }
+
+    if (dataOffset + entry.size > tarBytes.length) {
+      throw new Error(`"${entry.path}" extends past the TAR archive boundary.`);
+    }
+
+    return {
+      path: entry.path,
+      bytes: tarBytes.slice(dataOffset, dataOffset + entry.size),
+    };
+  });
 }
 
 function parsePaxHeader(bytes: Uint8Array): Record<string, string> {
@@ -480,18 +503,24 @@ function buildTarPath(name: string, prefix: string): string {
   return prefix || name;
 }
 
-function normalizeArchivePath(path: string, directory: boolean): string {
-  let normalized = trimNulls(path)
+function normalizeArchivePath(path: string): string {
+  const normalized = trimNulls(path)
     .replace(/\\/g, "/")
     .replace(/^\.\/+/, "")
     .replace(/^\/+/, "")
     .replace(/\/{2,}/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  const safeSegments: string[] = [];
 
-  if (directory) {
-    normalized = normalized.replace(/\/+$/g, "");
+  for (const segment of segments) {
+    const cleanedSegment = segment.replace(/[\u0000-\u001f\u007f]/g, "");
+    if (!cleanedSegment || cleanedSegment === ".") continue;
+    if (cleanedSegment === "..") return "";
+    safeSegments.push(cleanedSegment);
   }
 
-  return normalized;
+  if (safeSegments.length === 0) return "";
+  return safeSegments.join("/");
 }
 
 function roundUpToTarBlock(size: number): number {
@@ -511,4 +540,36 @@ function compareArchiveEntries(
 ): number {
   if (a.directory !== b.directory) return a.directory ? -1 : 1;
   return a.path.localeCompare(b.path);
+}
+
+function resolveRequestedEntries(
+  archiveData: ArchiveData,
+  entryPaths: string[],
+  password?: string
+): ArchiveEntrySummary[] {
+  const uniqueEntryPaths = [...new Set(entryPaths)];
+  const archiveEntryMap = new Map(
+    archiveData.entries
+      .filter((candidate) => !candidate.directory)
+      .map((candidate) => [candidate.path, candidate] as const)
+  );
+
+  return uniqueEntryPaths.map((entryPath) => {
+    const entry = archiveEntryMap.get(entryPath);
+    if (!entry) {
+      throw new Error(`Couldn't find "${entryPath}" in this archive.`);
+    }
+
+    if (entry.encrypted && !password) {
+      throw new Error("This archive entry requires a password.");
+    }
+
+    if (entry.size > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(
+        `"${entry.path}" is ${formatBytes(entry.size)}, which is above the ${formatBytes(MAX_ARCHIVE_ENTRY_BYTES)} extraction limit.`
+      );
+    }
+
+    return entry;
+  });
 }

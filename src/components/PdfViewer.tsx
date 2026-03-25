@@ -17,6 +17,10 @@ interface PasswordRequestState {
   submit: (password: string) => void;
 }
 
+function getPdfAssetBaseUrl(pdfjs: PdfModule) {
+  return `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}`;
+}
+
 function ViewerMessage({
   title,
   body,
@@ -89,17 +93,16 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
   const [error, setError] = useState<string | null>(null);
   const [passwordRequest, setPasswordRequest] = useState<PasswordRequestState | null>(null);
   const [passwordValue, setPasswordValue] = useState("");
+  const visiblePage = pageCount > 0 ? Math.min(Math.max(currentPage, 1), pageCount) : 1;
 
   useEffect(() => {
     let cancelled = false;
 
     const loadPdfModule = async () => {
       try {
-        const pdfModule = await import("pdfjs-dist");
-        pdfModule.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url
-        ).toString();
+        const pdfModule = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as PdfModule;
+        pdfModule.GlobalWorkerOptions.workerSrc =
+          `${getPdfAssetBaseUrl(pdfModule)}/legacy/build/pdf.worker.min.mjs`;
 
         if (!cancelled) {
           setPdfjs(pdfModule);
@@ -139,10 +142,26 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
   }, [passwordRequest]);
 
   useEffect(() => {
+    if (pageCount < 1) return;
+    setCurrentPage((page) => {
+      const clampedPage = Math.min(Math.max(page, 1), pageCount);
+      return page === clampedPage ? page : clampedPage;
+    });
+  }, [pageCount]);
+
+  useEffect(() => {
     if (!pdfjs) return;
 
     let disposed = false;
-    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    const assetBaseUrl = getPdfAssetBaseUrl(pdfjs);
+    const loadingTask = pdfjs.getDocument({
+      data: bytes.slice(),
+      cMapUrl: `${assetBaseUrl}/cmaps/`,
+      cMapPacked: true,
+      iccUrl: `${assetBaseUrl}/iccs/`,
+      standardFontDataUrl: `${assetBaseUrl}/standard_fonts/`,
+      wasmUrl: `${assetBaseUrl}/wasm/`,
+    });
     loadingTaskRef.current = loadingTask;
     documentRef.current = null;
     setCurrentPage(1);
@@ -225,7 +244,7 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
     setLoadingLabel("Rendering page...");
 
     const renderPage = async () => {
-      const page = await document.getPage(currentPage);
+      const page = await document.getPage(visiblePage);
       if (cancelled) return;
 
       const baseViewport = page.getViewport({ scale: 1 });
@@ -266,8 +285,10 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
     void renderPage().catch((reason: unknown) => {
       if (cancelled) return;
 
-      const message = reason instanceof Error ? reason.name : String(reason);
-      if (message === "RenderingCancelledException") return;
+      const message =
+        reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+      if (message.startsWith("RenderingCancelledException")) return;
+      console.error("Failed to render PDF page", reason);
       setError("Could not render this PDF page.");
       setLoadingLabel(null);
     });
@@ -277,7 +298,7 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
     };
-  }, [containerWidth, currentPage, pageCount]);
+  }, [containerWidth, pageCount, visiblePage]);
 
   const handlePasswordSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -320,15 +341,15 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
         {pageCount > 0 ? (
           <div className="ml-auto flex items-center gap-2">
             <ToolbarButton
-              disabled={currentPage <= 1}
+              disabled={visiblePage <= 1}
               label="Prev"
               onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
             />
             <span style={{ color: "var(--sh-text)" }}>
-              {currentPage} / {pageCount}
+              {visiblePage} / {pageCount}
             </span>
             <ToolbarButton
-              disabled={currentPage >= pageCount}
+              disabled={visiblePage >= pageCount}
               label="Next"
               onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))}
             />

@@ -48,7 +48,8 @@ import GlobalSearch, { type SearchableTab } from "./GlobalSearch";
 
 type ViewMode = "auto" | "archive" | "display" | "text" | "binary";
 type EffectiveViewMode = Exclude<ViewMode, "auto">;
-type Theme = "dark" | "light";
+type ThemePreference = "auto" | "dark" | "light";
+type ResolvedTheme = "dark" | "light";
 type MarkdownMode = "edit" | "preview" | "split";
 
 const VIEW_MODE_LABELS: Record<ViewMode, string> = {
@@ -62,10 +63,19 @@ const VIEW_MODE_LABELS: Record<ViewMode, string> = {
 const THEME_STORAGE_KEY = "shoshum-theme";
 const THEME_CHANGE_EVENT = "shoshum-theme-change";
 
-function readStoredTheme(): Theme {
-  if (typeof window === "undefined") return "dark";
+function readStoredTheme(): ThemePreference {
+  if (typeof window === "undefined") return "auto";
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === "light" || stored === "dark" ? stored : "dark";
+  return stored === "light" || stored === "dark" || stored === "auto" ? stored : "auto";
+}
+
+function getSystemTheme(): ResolvedTheme {
+  if (typeof window === "undefined") return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function resolveTheme(pref: ThemePreference): ResolvedTheme {
+  return pref === "auto" ? getSystemTheme() : pref;
 }
 
 function subscribeToThemeChange(callback: () => void): () => void {
@@ -262,25 +272,42 @@ async function createZipBytes(
 
 // ── Theme Hook ──────────────────────────────────────────────
 
-function useTheme(): [Theme, () => void] {
-  const theme = useSyncExternalStore<Theme>(
+function useTheme(): [ThemePreference, ResolvedTheme, () => void] {
+  const preference = useSyncExternalStore<ThemePreference>(
     subscribeToThemeChange,
     readStoredTheme,
-    (): Theme => "dark"
+    (): ThemePreference => "auto"
   );
 
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
+
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    const mql = window.matchMedia("(prefers-color-scheme: light)");
+    const handler = () => {
+      setSystemTheme(mql.matches ? "light" : "dark");
+      if (readStoredTheme() === "auto") {
+        window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
+      }
+    };
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
+
+  const resolved: ResolvedTheme = preference === "auto" ? systemTheme : preference;
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", resolved);
+  }, [resolved]);
 
   const toggle = useCallback(() => {
-    const next = theme === "dark" ? "light" : "dark";
+    const order: ThemePreference[] = ["auto", "light", "dark"];
+    const next = order[(order.indexOf(preference) + 1) % order.length];
     localStorage.setItem(THEME_STORAGE_KEY, next);
-    document.documentElement.setAttribute("data-theme", next);
+    document.documentElement.setAttribute("data-theme", next === "auto" ? getSystemTheme() : next);
     window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
-  }, [theme]);
+  }, [preference]);
 
-  return [theme, toggle];
+  return [preference, resolved, toggle];
 }
 
 // ── Icon Components ─────────────────────────────────────────
@@ -299,6 +326,13 @@ function MoonIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+function AutoThemeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   );
 }
@@ -346,10 +380,10 @@ function TBtn({
 
 // ── Landing Page ────────────────────────────────────────────
 
-function LandingPage({ onFile, onOpenPicker, theme, onToggleTheme, recentFiles, onClearRecent }: {
+function LandingPage({ onFile, onOpenPicker, themePreference, onToggleTheme, recentFiles, onClearRecent }: {
   onFile: (file: File, handle: FileSystemFileHandle | null) => void;
   onOpenPicker: () => void;
-  theme: Theme;
+  themePreference: ThemePreference;
   onToggleTheme: () => void;
   recentFiles: RecentFile[];
   onClearRecent: () => void;
@@ -362,8 +396,8 @@ function LandingPage({ onFile, onOpenPicker, theme, onToggleTheme, recentFiles, 
       <header className="flex items-center justify-between h-10 px-3 shrink-0" style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}>
         <div className="w-8" />
         <h1 className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)" }}>shoshum</h1>
-        <TBtn onClick={onToggleTheme} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
-          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
+          {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
         </TBtn>
       </header>
       <div
@@ -437,7 +471,7 @@ function DragOverlay() {
 // ── Main App ────────────────────────────────────────────────
 
 export default function App() {
-  const [theme, toggleTheme] = useTheme();
+  const [themePreference, theme, toggleTheme] = useTheme();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);

@@ -10,6 +10,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "shoshum",
   description: "A technical file viewer and editor. Opens anything, edits everything.",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0d1117" },
+  ],
 };
 
 export default function RootLayout({

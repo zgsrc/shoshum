@@ -297,6 +297,14 @@ function useTheme(): [ThemePreference, ResolvedTheme, () => void] {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", resolved);
+    const themeColor = resolved === "light" ? "#ffffff" : "#0d1117";
+    let meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", "theme-color");
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", themeColor);
   }, [resolved]);
 
   const toggle = useCallback(() => {

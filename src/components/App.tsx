@@ -1,0 +1,945 @@
+"use client";
+
+import { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  type FileData,
+  type FileFormat,
+  canDisplayNatively,
+  detectFormat,
+  formatBytes,
+  formatLabel,
+  countLines,
+  detectLineEnding,
+  convertLineEnding,
+  decodeWithEncoding,
+  isBinaryByContent,
+  isBinaryByExtension,
+  SUPPORTED_ENCODINGS,
+  type LineEnding,
+} from "@/lib/fileUtils";
+import {
+  extractArchiveEntry,
+  loadArchiveData,
+  type ArchiveData,
+  type ArchiveEntrySummary,
+} from "@/lib/archiveUtils";
+import { type Settings, loadSettings, saveSettings } from "@/lib/settings";
+import { getRecentFiles, addRecentFile, clearRecentFiles, type RecentFile } from "@/lib/recentFiles";
+import { prettyPrintJSON, minifyJSON, prettyPrintXML, minifyXML } from "@/lib/formatters";
+import ArchiveBrowser from "./ArchiveBrowser";
+import CodeEditor, { type CodeEditorRef } from "./CodeEditor";
+import DisplayViewer from "./DisplayViewer";
+import HexViewer from "./HexViewer";
+import MarkdownPreview from "./MarkdownPreview";
+import TabBar, { type TabInfo } from "./TabBar";
+import CommandPalette, { type Command } from "./CommandPalette";
+import SettingsPanel from "./SettingsPanel";
+import GoToLine from "./GoToLine";
+import DiffView from "./DiffView";
+import ShortcutGuide from "./ShortcutGuide";
+
+type ViewMode = "auto" | "archive" | "display" | "text" | "binary";
+type EffectiveViewMode = Exclude<ViewMode, "auto">;
+type Theme = "dark" | "light";
+type MarkdownMode = "edit" | "preview" | "split";
+
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  auto: "Auto",
+  archive: "Archive",
+  display: "Display",
+  text: "Text",
+  binary: "Binary",
+};
+
+const THEME_STORAGE_KEY = "shoshum-theme";
+const THEME_CHANGE_EVENT = "shoshum-theme-change";
+
+function readStoredTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "light" || stored === "dark" ? stored : "dark";
+}
+
+function subscribeToThemeChange(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  const handler = () => callback();
+  window.addEventListener("storage", handler);
+  window.addEventListener(THEME_CHANGE_EVENT, handler);
+
+  return () => {
+    window.removeEventListener("storage", handler);
+    window.removeEventListener(THEME_CHANGE_EVENT, handler);
+  };
+}
+
+interface Tab {
+  id: string;
+  fileData: FileData;
+  currentContent: string;
+  currentBytes: Uint8Array;
+  originalContent: string;
+  modified: boolean;
+  viewMode: ViewMode;
+  encoding: string;
+  markdownMode: MarkdownMode;
+  readOnly: boolean;
+  readOnlyReason: string | null;
+  archiveData: ArchiveData | null;
+  archiveOrigin: { archiveName: string; entryPath: string } | null;
+  sourceKey: string | null;
+}
+
+let nextId = 0;
+function genId() {
+  return `tab-${++nextId}`;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+// ── Theme Hook ──────────────────────────────────────────────
+
+function useTheme(): [Theme, () => void] {
+  const theme = useSyncExternalStore<Theme>(
+    subscribeToThemeChange,
+    readStoredTheme,
+    (): Theme => "dark"
+  );
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  const toggle = useCallback(() => {
+    const next = theme === "dark" ? "light" : "dark";
+    localStorage.setItem(THEME_STORAGE_KEY, next);
+    document.documentElement.setAttribute("data-theme", next);
+    window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
+  }, [theme]);
+
+  return [theme, toggle];
+}
+
+// ── Icon Components ─────────────────────────────────────────
+
+function SunIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+      <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    </svg>
+  );
+}
+function MoonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+
+// ── Toolbar Button ──────────────────────────────────────────
+
+function TBtn({
+  onClick,
+  title,
+  accent,
+  disabled,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  accent?: boolean;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="p-1.5 rounded transition-colors disabled:cursor-default disabled:opacity-50"
+      title={title}
+      style={{ color: disabled ? "var(--sh-text-muted)" : accent ? "var(--sh-accent-blue)" : "var(--sh-text2)" }}
+      onMouseEnter={(e) => {
+        if (disabled) return;
+        if (!accent) e.currentTarget.style.color = "var(--sh-text)";
+        e.currentTarget.style.backgroundColor = "var(--sh-bg-hover)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.color = disabled
+          ? "var(--sh-text-muted)"
+          : accent
+            ? "var(--sh-accent-blue)"
+            : "var(--sh-text2)";
+        e.currentTarget.style.backgroundColor = "transparent";
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Landing Page ────────────────────────────────────────────
+
+function LandingPage({ onFile, onOpenPicker, theme, onToggleTheme, recentFiles, onClearRecent }: {
+  onFile: (file: File, handle: FileSystemFileHandle | null) => void;
+  onOpenPicker: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
+  recentFiles: RecentFile[];
+  onClearRecent: () => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <>
+      <header className="flex items-center justify-between h-10 px-3 shrink-0" style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}>
+        <div className="w-8" />
+        <h1 className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)" }}>shoshum</h1>
+        <TBtn onClick={onToggleTheme} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        </TBtn>
+      </header>
+      <div
+        className="flex flex-col items-center justify-center flex-1 transition-colors"
+        style={{ backgroundColor: dragging ? "var(--sh-drag-bg)" : "transparent" }}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) onFile(f, null); }}
+      >
+        <div className="flex flex-col items-center gap-6 max-w-lg text-center">
+          <div className="flex items-center justify-center w-20 h-20 rounded-2xl" style={{ backgroundColor: "var(--sh-bg2)", border: "1px solid var(--sh-bg-active)" }}>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--sh-accent-blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-lg font-medium mb-2" style={{ color: "var(--sh-text)" }}>Open a file</h2>
+            <p className="text-sm leading-relaxed" style={{ color: "var(--sh-text2)" }}>
+              Drop any file here, or click to browse. Text files get syntax highlighting, binary files open in a byte editor, display mode previews files the browser can render, and archives can be browsed and extracted read-only.
+            </p>
+          </div>
+          <button onClick={onOpenPicker} className="px-5 py-2.5 rounded-lg text-white text-sm font-medium transition-colors" style={{ backgroundColor: "var(--sh-btn-green)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-btn-green-hover)")} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-btn-green)")}>
+            Open File
+          </button>
+          <input ref={inputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f, null); }} />
+          <div className="flex items-center gap-4 text-xs" style={{ color: "var(--sh-text-muted)" }}>
+            <span>⌘O open</span><span>⌘S save</span><span>⌘⇧P commands</span><span>? shortcuts</span>
+          </div>
+
+          {recentFiles.length > 0 && (
+            <div className="w-full mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium" style={{ color: "var(--sh-text2)" }}>Recent Files</span>
+                <button className="text-xs transition-colors" style={{ color: "var(--sh-text-muted)" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = "var(--sh-text)")} onMouseLeave={(e) => (e.currentTarget.style.color = "var(--sh-text-muted)")}
+                  onClick={onClearRecent}>Clear</button>
+              </div>
+              <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--sh-border)" }}>
+                {recentFiles.slice(0, 8).map((rf, i) => (
+                  <button key={i} className="flex items-center justify-between w-full px-3 py-1.5 text-left text-xs font-mono transition-colors"
+                    style={{ color: "var(--sh-text)", borderBottom: i < Math.min(recentFiles.length, 8) - 1 ? "1px solid var(--sh-border)" : undefined }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-bg-hover)")} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    onClick={onOpenPicker}>
+                    <span className="truncate">{rf.name}</span>
+                    <span style={{ color: "var(--sh-text-muted)" }}>{rf.format}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Drag Overlay ────────────────────────────────────────────
+
+function DragOverlay() {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ backgroundColor: "rgba(0,0,0,0.4)" }}>
+      <div className="rounded-2xl px-8 py-6 text-center" style={{ backgroundColor: "var(--sh-bg2)", border: "2px dashed var(--sh-accent-blue)" }}>
+        <p className="text-sm font-medium" style={{ color: "var(--sh-text)" }}>Drop file to open in a new tab</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ────────────────────────────────────────────────
+
+export default function App() {
+  const [theme, toggleTheme] = useTheme();
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showGoToLine, setShowGoToLine] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<CodeEditorRef>(null);
+
+  const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
+
+  useEffect(() => {
+    setRecentFiles(getRecentFiles());
+  }, [tabs.length]);
+
+  // ── Tab helpers ─────────────────────────────────
+
+  const updateTab = useCallback((id: string, patch: Partial<Tab>) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  const closeTab = useCallback((id: string) => {
+    setTabs((prev) => {
+      const tab = prev.find((t) => t.id === id);
+      if (tab?.modified && !window.confirm("Unsaved changes. Close anyway?")) return prev;
+      const idx = prev.findIndex((t) => t.id === id);
+      const next = prev.filter((t) => t.id !== id);
+      if (id === activeTabId && next.length > 0) {
+        setActiveTabId(next[Math.min(idx, next.length - 1)].id);
+      } else if (next.length === 0) {
+        setActiveTabId(null);
+      }
+      return next.filter((t) => t.id !== id);
+    });
+  }, [activeTabId]);
+
+  const closeAllTabs = useCallback(() => {
+    const hasModified = tabs.some((t) => t.modified);
+    if (hasModified && !window.confirm("Some tabs have unsaved changes. Close all?")) return;
+    setTabs([]);
+    setActiveTabId(null);
+  }, [tabs]);
+
+  // ── File operations ─────────────────────────────
+
+  const buildTabFromBytes = useCallback(
+    async ({
+      name,
+      size,
+      bytes,
+      handle,
+      lastModified,
+      mimeType,
+      encoding = "utf-8",
+      readOnly = false,
+      archiveOrigin = null,
+      sourceKey = null,
+    }: {
+      name: string;
+      size: number;
+      bytes: Uint8Array;
+      handle: FileSystemFileHandle | null;
+      lastModified: number;
+      mimeType: string;
+      encoding?: string;
+      readOnly?: boolean;
+      archiveOrigin?: { archiveName: string; entryPath: string } | null;
+      sourceKey?: string | null;
+    }): Promise<Tab> => {
+      const detectedFormat = detectFormat(name);
+      const isBinary =
+        isBinaryByExtension(name) || isBinaryByContent(bytes);
+      const format: FileFormat =
+        isBinary && detectedFormat !== "archive" ? "binary" : detectedFormat;
+      const text = isBinary ? "" : decodeWithEncoding(bytes, encoding);
+      const archiveData =
+        format === "archive" ? await loadArchiveData(name, bytes) : null;
+      const nextReadOnly = readOnly || format === "archive";
+      const readOnlyReason = archiveOrigin
+        ? `Extracted from ${archiveOrigin.archiveName}. Archive entries open read-only.`
+        : format === "archive"
+          ? "Archive contents can be browsed and analyzed, but editing or writing back into an archive is not supported yet."
+          : nextReadOnly
+            ? "This tab is read-only."
+            : null;
+
+      return {
+        id: genId(),
+        fileData: {
+          name,
+          size,
+          format,
+          content: text,
+          bytes,
+          isBinary,
+          handle,
+          lastModified,
+          mimeType: mimeType || "application/octet-stream",
+        },
+        currentContent: text,
+        currentBytes: bytes,
+        originalContent: text,
+        modified: false,
+        viewMode: format === "archive" ? "archive" : "auto",
+        encoding,
+        markdownMode: "edit",
+        readOnly: nextReadOnly,
+        readOnlyReason,
+        archiveData,
+        archiveOrigin,
+        sourceKey,
+      };
+    },
+    []
+  );
+
+  const loadFile = useCallback(
+    async (
+      file: File,
+      handle: FileSystemFileHandle | null,
+      encoding = "utf-8"
+    ) => {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const tab = await buildTabFromBytes({
+          name: file.name,
+          size: file.size,
+          bytes,
+          handle,
+          lastModified: file.lastModified,
+          mimeType: file.type || "application/octet-stream",
+          encoding,
+        });
+
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+
+        addRecentFile({
+          name: file.name,
+          size: file.size,
+          format: formatLabel(tab.fileData.format),
+          lastOpened: Date.now(),
+        });
+      } catch (error) {
+        window.alert(getErrorMessage(error));
+      }
+    },
+    [buildTabFromBytes]
+  );
+
+  const openArchiveEntry = useCallback(
+    async (archiveTab: Tab, entry: ArchiveEntrySummary) => {
+      if (!archiveTab.archiveData) return;
+
+      const sourceKey = `${archiveTab.id}:${entry.path}`;
+      const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+
+      try {
+        const bytes = await extractArchiveEntry(
+          archiveTab.fileData.bytes,
+          archiveTab.archiveData,
+          entry.path
+        );
+        const tab = await buildTabFromBytes({
+          name: entry.path,
+          size: bytes.byteLength,
+          bytes,
+          handle: null,
+          lastModified: entry.lastModified ?? Date.now(),
+          mimeType: "application/octet-stream",
+          readOnly: true,
+          archiveOrigin: {
+            archiveName: archiveTab.fileData.name,
+            entryPath: entry.path,
+          },
+          sourceKey,
+        });
+
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+      } catch (error) {
+        window.alert(getErrorMessage(error));
+      }
+    },
+    [tabs, buildTabFromBytes]
+  );
+
+  const handleOpen = useCallback(async () => {
+    if ("showOpenFilePicker" in window) {
+      try {
+        const [handle] = await (window as unknown as { showOpenFilePicker: (opts?: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker();
+        const file = await handle.getFile();
+        await loadFile(file, handle);
+      } catch { /* cancelled */ }
+    } else {
+      fileInputRef.current?.click();
+    }
+  }, [loadFile]);
+
+  const handleSave = useCallback(async () => {
+    if (!activeTab || activeTab.readOnly || activeTab.fileData.format === "archive") return;
+    const effMode = getEffectiveMode(activeTab);
+
+    if (activeTab.fileData.handle) {
+      try {
+        const writable = await (activeTab.fileData.handle as unknown as { createWritable: () => Promise<{ write: (d: unknown) => Promise<void>; close: () => Promise<void> }> }).createWritable();
+        await writable.write(effMode === "binary" || activeTab.fileData.isBinary ? activeTab.currentBytes : activeTab.currentContent);
+        await writable.close();
+        updateTab(activeTab.id, { modified: false, originalContent: activeTab.currentContent });
+      } catch { /* denied */ }
+    } else {
+      const blob = effMode === "binary" || activeTab.fileData.isBinary
+        ? new Blob([activeTab.currentBytes.buffer as ArrayBuffer])
+        : new Blob([activeTab.currentContent], { type: "text/plain" });
+
+      if ("showSaveFilePicker" in window) {
+        try {
+          const handle = await (window as unknown as { showSaveFilePicker: (opts?: object) => Promise<FileSystemFileHandle> }).showSaveFilePicker({ suggestedName: activeTab.fileData.name });
+          const writable = await (handle as unknown as { createWritable: () => Promise<{ write: (d: unknown) => Promise<void>; close: () => Promise<void> }> }).createWritable();
+          await writable.write(blob);
+          await writable.close();
+          updateTab(activeTab.id, { modified: false, originalContent: activeTab.currentContent, fileData: { ...activeTab.fileData, handle } });
+        } catch { /* cancelled */ }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = activeTab.fileData.name; a.click();
+        URL.revokeObjectURL(url);
+        updateTab(activeTab.id, { modified: false });
+      }
+    }
+  }, [activeTab, updateTab]);
+
+  // ── Format / Minify ─────────────────────────────
+
+  const handleFormat = useCallback(() => {
+    if (!activeTab || activeTab.fileData.isBinary || activeTab.readOnly) return;
+    let result = activeTab.currentContent;
+    if (activeTab.fileData.format === "json") {
+      const r = prettyPrintJSON(activeTab.currentContent);
+      if (r.error) return;
+      result = r.result;
+    } else if (activeTab.fileData.format === "xml" || activeTab.fileData.format === "html") {
+      result = prettyPrintXML(activeTab.currentContent);
+    } else return;
+    editorRef.current?.replaceContent(result);
+  }, [activeTab]);
+
+  const handleMinify = useCallback(() => {
+    if (!activeTab || activeTab.fileData.isBinary || activeTab.readOnly) return;
+    let result = activeTab.currentContent;
+    if (activeTab.fileData.format === "json") {
+      const r = minifyJSON(activeTab.currentContent);
+      if (r.error) return;
+      result = r.result;
+    } else if (activeTab.fileData.format === "xml" || activeTab.fileData.format === "html") {
+      result = minifyXML(activeTab.currentContent);
+    } else return;
+    editorRef.current?.replaceContent(result);
+  }, [activeTab]);
+
+  // ── Diff ────────────────────────────────────────
+
+  const handleCompareWithSaved = useCallback(async () => {
+    if (!activeTab || activeTab.readOnly) return;
+    if (activeTab.fileData.handle) {
+      try {
+        const file = await activeTab.fileData.handle.getFile();
+        const text = await file.text();
+        updateTab(activeTab.id, { originalContent: text });
+      } catch { /* use stored original */ }
+    }
+    setShowDiff(true);
+  }, [activeTab, updateTab]);
+
+  // ── Line endings ────────────────────────────────
+
+  const handleConvertLineEndings = useCallback((to: "LF" | "CRLF") => {
+    if (!activeTab || activeTab.fileData.isBinary || activeTab.readOnly) return;
+    const converted = convertLineEnding(activeTab.currentContent, to);
+    editorRef.current?.replaceContent(converted);
+  }, [activeTab]);
+
+  // ── Encoding ────────────────────────────────────
+
+  const handleChangeEncoding = useCallback((enc: string) => {
+    if (!activeTab) return;
+    const newText = decodeWithEncoding(activeTab.currentBytes, enc);
+    updateTab(activeTab.id, { encoding: enc, currentContent: newText });
+  }, [activeTab, updateTab]);
+
+  // ── Settings ────────────────────────────────────
+
+  const handleSettingsChange = useCallback((s: Settings) => {
+    setSettings(s);
+    saveSettings(s);
+  }, []);
+
+  // ── Keyboard shortcuts ──────────────────────────
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "o") { e.preventDefault(); handleOpen(); }
+      if (mod && e.key === "s") { e.preventDefault(); handleSave(); }
+      if (mod && e.key === "w") { e.preventDefault(); if (activeTabId) closeTab(activeTabId); }
+      if (mod && e.key === "g") { e.preventDefault(); if (activeTab && !activeTab.fileData.isBinary) setShowGoToLine(true); }
+      if (mod && e.shiftKey && e.key === "P") { e.preventDefault(); setShowCommandPalette(true); }
+      if (!mod && !e.shiftKey && e.key === "?" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.closest?.(".cm-editor"))) {
+        e.preventDefault(); setShowShortcuts((v) => !v);
+      }
+      if (mod && e.key === "]") { e.preventDefault(); switchTabRelative(1); }
+      if (mod && e.key === "[") { e.preventDefault(); switchTabRelative(-1); }
+      if (mod && !e.shiftKey && e.key >= "1" && e.key <= "9") {
+        e.preventDefault();
+        const idx = parseInt(e.key) - 1;
+        if (idx < tabs.length) setActiveTabId(tabs[idx].id);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  });
+
+  const switchTabRelative = (delta: number) => {
+    if (tabs.length < 2 || !activeTabId) return;
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const next = (idx + delta + tabs.length) % tabs.length;
+    setActiveTabId(tabs[next].id);
+  };
+
+  // ── Global drag-and-drop ────────────────────────
+
+  useEffect(() => {
+    let dragCount = 0;
+    const onEnter = (e: DragEvent) => { e.preventDefault(); dragCount++; setIsDragging(true); };
+    const onLeave = (e: DragEvent) => { e.preventDefault(); dragCount--; if (dragCount <= 0) { dragCount = 0; setIsDragging(false); } };
+    const onOver = (e: DragEvent) => e.preventDefault();
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault(); dragCount = 0; setIsDragging(false);
+      const file = e.dataTransfer?.files[0];
+      if (file) loadFile(file, null);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("drop", onDrop);
+    return () => { window.removeEventListener("dragenter", onEnter); window.removeEventListener("dragleave", onLeave); window.removeEventListener("dragover", onOver); window.removeEventListener("drop", onDrop); };
+  }, [loadFile]);
+
+  // ── Command Palette commands ────────────────────
+
+  const commands: Command[] = useMemo(() => {
+    const cmds: Command[] = [
+      { id: "open", label: "Open File", shortcut: "⌘O", action: handleOpen },
+    ];
+    if (activeTab && !activeTab.readOnly && activeTab.fileData.format !== "archive") {
+      cmds.push({ id: "save", label: "Save File", shortcut: "⌘S", action: handleSave });
+    }
+    if (activeTab) {
+      cmds.push(
+        { id: "close", label: "Close Tab", shortcut: "⌘W", action: () => closeTab(activeTab.id) },
+        { id: "closeAll", label: "Close All Tabs", action: closeAllTabs },
+      );
+    }
+    cmds.push(
+      { id: "theme", label: `Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`, action: toggleTheme },
+      { id: "settings", label: "Open Settings", action: () => setShowSettings(true) },
+      { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "?", action: () => setShowShortcuts(true) },
+    );
+    if (activeTab && !activeTab.fileData.isBinary) {
+      cmds.push(
+        { id: "goto", label: "Go to Line", shortcut: "⌘G", action: () => setShowGoToLine(true) },
+        { id: "wordwrap", label: `${settings.wordWrap ? "Disable" : "Enable"} Word Wrap`, action: () => handleSettingsChange({ ...settings, wordWrap: !settings.wordWrap }) },
+        { id: "minimap", label: `${settings.minimap ? "Hide" : "Show"} Minimap`, action: () => handleSettingsChange({ ...settings, minimap: !settings.minimap }) },
+        { id: "linenums", label: `${settings.lineNumbers ? "Hide" : "Show"} Line Numbers`, action: () => handleSettingsChange({ ...settings, lineNumbers: !settings.lineNumbers }) },
+      );
+      if (!activeTab.readOnly && (activeTab.fileData.format === "json" || activeTab.fileData.format === "xml" || activeTab.fileData.format === "html")) {
+        cmds.push(
+          { id: "format", label: "Format Document (Pretty Print)", section: "Format", action: handleFormat },
+          { id: "minify", label: "Minify Document", section: "Format", action: handleMinify },
+        );
+      }
+      if (activeTab.fileData.format === "markdown") {
+        cmds.push({ id: "mdpreview", label: "Toggle Markdown Preview", action: () => {
+          const modes: MarkdownMode[] = ["edit", "split", "preview"];
+          const curr = modes.indexOf(activeTab.markdownMode);
+          updateTab(activeTab.id, { markdownMode: modes[(curr + 1) % modes.length] });
+        }});
+      }
+      if (!activeTab.readOnly) {
+        cmds.push(
+          { id: "diff", label: "Compare with Saved", action: handleCompareWithSaved },
+          { id: "lf", label: "Convert Line Endings to LF", section: "Line Endings", action: () => handleConvertLineEndings("LF") },
+          { id: "crlf", label: "Convert Line Endings to CRLF", section: "Line Endings", action: () => handleConvertLineEndings("CRLF") },
+        );
+      }
+      for (const enc of SUPPORTED_ENCODINGS) {
+        cmds.push({ id: `enc-${enc}`, label: `Reopen as ${enc.toUpperCase()}`, section: "Encoding", action: () => handleChangeEncoding(enc) });
+      }
+    }
+    return cmds;
+  }, [activeTab, theme, settings, handleOpen, handleSave, closeTab, closeAllTabs, toggleTheme, handleFormat, handleMinify, handleCompareWithSaved, handleConvertLineEndings, handleChangeEncoding, handleSettingsChange, updateTab]);
+
+  // ── Derived state ───────────────────────────────
+
+  const lineEnding: LineEnding | null = activeTab && !activeTab.fileData.isBinary ? detectLineEnding(activeTab.currentContent) : null;
+  const tabInfos: TabInfo[] = tabs.map((t) => ({ id: t.id, name: t.fileData.name, modified: t.modified }));
+
+  // ── Render ──────────────────────────────────────
+
+  return (
+    <div className="flex flex-col h-screen" style={{ backgroundColor: "var(--sh-bg)", color: "var(--sh-text)" }}>
+      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadFile(f, null); }} />
+
+      {tabs.length === 0 ? (
+        <LandingPage
+          onFile={loadFile}
+          onOpenPicker={handleOpen}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          recentFiles={recentFiles}
+          onClearRecent={() => { clearRecentFiles(); setRecentFiles([]); }}
+        />
+      ) : (
+        <>
+          <TabBar tabs={tabInfos} activeId={activeTabId} onSelect={setActiveTabId} onClose={closeTab} onNewTab={handleOpen} />
+          {activeTab && <ActiveTabView
+            tab={activeTab}
+            theme={theme}
+            settings={settings}
+            cursorPos={cursorPos}
+            lineEnding={lineEnding}
+            editorRef={editorRef}
+            onToggleTheme={toggleTheme}
+            onUpdateTab={updateTab}
+            onOpen={handleOpen}
+            onSave={handleSave}
+            onClose={() => closeTab(activeTab.id)}
+            onCursorChange={setCursorPos}
+            onFormat={handleFormat}
+            onOpenArchiveEntry={openArchiveEntry}
+            onShowCommands={() => setShowCommandPalette(true)}
+            onShowShortcuts={() => setShowShortcuts(true)}
+          />}
+        </>
+      )}
+
+      {isDragging && tabs.length > 0 && <DragOverlay />}
+      {showCommandPalette && <CommandPalette commands={commands} onClose={() => setShowCommandPalette(false)} />}
+      {showSettings && <SettingsPanel settings={settings} onChange={handleSettingsChange} onClose={() => setShowSettings(false)} />}
+      {showGoToLine && activeTab && (
+        <GoToLine
+          totalLines={countLines(activeTab.currentContent)}
+          onGo={(line) => editorRef.current?.goToLine(line)}
+          onClose={() => setShowGoToLine(false)}
+        />
+      )}
+      {showDiff && activeTab && (
+        <DiffView
+          original={activeTab.originalContent}
+          modified={activeTab.currentContent}
+          fileName={activeTab.fileData.name}
+          onClose={() => setShowDiff(false)}
+        />
+      )}
+      {showShortcuts && <ShortcutGuide onClose={() => setShowShortcuts(false)} />}
+    </div>
+  );
+}
+
+// ── Active Tab View ─────────────────────────────────────────
+
+function getEffectiveMode(tab: Tab): EffectiveViewMode {
+  if (tab.viewMode === "archive" && tab.archiveData) return "archive";
+  if (tab.viewMode === "display") return "display";
+  if (tab.viewMode === "text") return "text";
+  if (tab.viewMode === "binary") return "binary";
+  if (tab.fileData.format === "archive" && tab.archiveData) return "archive";
+  if (canDisplayNatively(tab.fileData.name, tab.fileData.mimeType, tab.fileData.format)) return "display";
+  if (tab.fileData.isBinary) return "binary";
+  return "text";
+}
+
+function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onShowCommands, onShowShortcuts }: {
+  tab: Tab;
+  theme: Theme;
+  settings: Settings;
+  cursorPos: { line: number; col: number };
+  lineEnding: LineEnding | null;
+  editorRef: React.RefObject<CodeEditorRef | null>;
+  onToggleTheme: () => void;
+  onUpdateTab: (id: string, patch: Partial<Tab>) => void;
+  onOpen: () => void;
+  onSave: () => void;
+  onClose: () => void;
+  onCursorChange: (pos: { line: number; col: number }) => void;
+  onFormat: () => void;
+  onOpenArchiveEntry: (archiveTab: Tab, entry: ArchiveEntrySummary) => void;
+  onShowCommands: () => void;
+  onShowShortcuts: () => void;
+}) {
+  const mode = getEffectiveMode(tab);
+  const canFormat = (tab.fileData.format === "json" || tab.fileData.format === "xml" || tab.fileData.format === "html") && !tab.fileData.isBinary && !tab.readOnly;
+  const isMarkdown = tab.fileData.format === "markdown" && mode === "text";
+  const viewModes =
+    tab.fileData.format === "archive"
+      ? (["auto", "archive", "binary"] as const)
+      : (["auto", "display", "text", "binary"] as const);
+  const archiveFileCount = tab.archiveData
+    ? tab.archiveData.entries.filter((entry) => !entry.directory).length
+    : 0;
+  const sourceLabel = tab.archiveOrigin
+    ? "archive"
+    : tab.fileData.handle
+      ? "local"
+      : "buffer";
+
+  return (
+    <>
+      {/* Toolbar */}
+      <div className="flex items-center h-10 px-3 gap-2 shrink-0 select-none" style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-xs px-1.5 py-0.5 rounded font-mono shrink-0" style={{ backgroundColor: "var(--sh-bg-active)", color: "var(--sh-accent-green)" }}>
+            {formatLabel(tab.fileData.format)}
+          </span>
+          <span className="text-sm truncate font-mono" style={{ color: "var(--sh-text)" }} title={tab.fileData.name}>{tab.fileData.name}</span>
+          {tab.readOnly && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0"
+              style={{ backgroundColor: "var(--sh-bg-active)", color: "var(--sh-text2)" }}
+              title={tab.readOnlyReason ?? undefined}
+            >
+              read-only
+            </span>
+          )}
+          {tab.modified && <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "var(--sh-accent-yellow)" }} />}
+        </div>
+        <div className="flex items-center gap-1">
+          {/* View mode toggle */}
+          <div className="flex rounded-md overflow-hidden mr-1" style={{ border: "1px solid var(--sh-bg-active)" }}>
+            {viewModes.map((m) => (
+              <button key={m} onClick={() => onUpdateTab(tab.id, { viewMode: m })}
+                className="px-2 py-1 text-xs font-medium transition-colors"
+                style={{ backgroundColor: tab.viewMode === m ? "var(--sh-bg-active)" : "transparent", color: tab.viewMode === m ? "var(--sh-text)" : "var(--sh-text2)" }}>
+                {VIEW_MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
+          {/* Markdown mode toggle */}
+          {isMarkdown && (
+            <div className="flex rounded-md overflow-hidden mr-1" style={{ border: "1px solid var(--sh-bg-active)" }}>
+              {(["edit", "split", "preview"] as MarkdownMode[]).map((m) => (
+                <button key={m} onClick={() => onUpdateTab(tab.id, { markdownMode: m })}
+                  className="px-2 py-1 text-xs font-medium transition-colors"
+                  style={{ backgroundColor: tab.markdownMode === m ? "var(--sh-bg-active)" : "transparent", color: tab.markdownMode === m ? "var(--sh-text)" : "var(--sh-text2)" }}>
+                  {m === "edit" ? "Edit" : m === "split" ? "Split" : "Preview"}
+                </button>
+              ))}
+            </div>
+          )}
+          {canFormat && (
+            <TBtn onClick={onFormat} title="Format document">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="21" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="14" x2="3" y2="14" /><line x1="21" y1="18" x2="3" y2="18" />
+              </svg>
+            </TBtn>
+          )}
+          <TBtn onClick={onOpen} title="Open file (⌘O)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+          </TBtn>
+          <TBtn onClick={onSave} title={tab.readOnly ? "Archive-backed tabs are read-only" : "Save file (⌘S)"} accent={tab.modified && !tab.readOnly} disabled={tab.readOnly || tab.fileData.format === "archive"}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
+          </TBtn>
+          <TBtn onClick={onShowCommands} title="Command Palette (⌘⇧P)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
+          </TBtn>
+          <TBtn onClick={onShowShortcuts} title="Keyboard Shortcuts (?)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          </TBtn>
+          <TBtn onClick={onToggleTheme} title={`${theme === "dark" ? "Light" : "Dark"} mode`}>
+            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+          </TBtn>
+          <TBtn onClick={onClose} title="Close tab">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </TBtn>
+        </div>
+      </div>
+
+      {/* Editor area */}
+      <div className="flex-1 overflow-hidden relative">
+        {mode === "archive" ? (
+          tab.archiveData ? (
+            <ArchiveBrowser
+              archive={tab.archiveData}
+              archiveName={tab.fileData.name}
+              onOpenEntry={(entry) => onOpenArchiveEntry(tab, entry)}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center" style={{ color: "var(--sh-text2)" }}>
+              <p className="text-sm">This archive could not be browsed.</p>
+            </div>
+          )
+        ) : mode === "display" ? (
+          <DisplayViewer
+            name={tab.fileData.name}
+            format={tab.fileData.format}
+            mimeType={tab.fileData.mimeType}
+            content={tab.currentContent}
+            bytes={tab.currentBytes}
+            isBinary={tab.fileData.isBinary}
+          />
+        ) : mode === "binary" ? (
+          <HexViewer bytes={tab.currentBytes} readOnly={tab.readOnly} onChange={(bytes) => onUpdateTab(tab.id, { currentBytes: bytes, modified: true })} />
+        ) : isMarkdown && tab.markdownMode === "preview" ? (
+          <MarkdownPreview content={tab.currentContent} />
+        ) : isMarkdown && tab.markdownMode === "split" ? (
+          <div className="flex h-full">
+            <div className="flex-1 overflow-hidden" style={{ borderRight: "1px solid var(--sh-border)" }}>
+              <CodeEditor ref={editorRef} content={tab.currentContent} format={tab.fileData.format} theme={theme}
+                wordWrap={settings.wordWrap} fontSize={settings.fontSize} tabSize={settings.tabSize}
+                showLineNumbers={settings.lineNumbers} showMinimap={settings.minimap}
+                readOnly={tab.readOnly}
+                onChange={(c) => onUpdateTab(tab.id, { currentContent: c, modified: true })}
+                onCursorChange={(l, c) => onCursorChange({ line: l, col: c })} />
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <MarkdownPreview content={tab.currentContent} />
+            </div>
+          </div>
+        ) : (
+          <CodeEditor ref={editorRef} content={tab.currentContent} format={tab.fileData.format} theme={theme}
+            wordWrap={settings.wordWrap} fontSize={settings.fontSize} tabSize={settings.tabSize}
+            showLineNumbers={settings.lineNumbers} showMinimap={settings.minimap}
+            readOnly={tab.readOnly}
+            onChange={(c) => onUpdateTab(tab.id, { currentContent: c, modified: true })}
+            onCursorChange={(l, c) => onCursorChange({ line: l, col: c })} />
+        )}
+        {/* Go to line overlay (positioned over editor) */}
+      </div>
+
+      {/* Status bar */}
+      <div className="flex items-center h-6 px-3 text-[11px] gap-4 shrink-0 select-none font-mono" style={{ backgroundColor: "var(--sh-bg2)", borderTop: "1px solid var(--sh-border)", color: "var(--sh-text2)" }}>
+        <span>{formatBytes(tab.fileData.size)}</span>
+        {!tab.fileData.isBinary && <span>{countLines(tab.currentContent).toLocaleString()} lines</span>}
+        {tab.archiveData && <span>{archiveFileCount.toLocaleString()} files</span>}
+        {mode !== "archive" && <span className="cursor-help" title="Encoding">{tab.encoding}</span>}
+        <span>{mode === "archive" ? "archive" : mode === "display" ? "display" : mode === "binary" ? "binary" : formatLabel(tab.fileData.format).toLowerCase()}</span>
+        {tab.readOnly && <span title={tab.readOnlyReason ?? undefined}>read-only</span>}
+        {lineEnding && <span className="cursor-help" title="Line endings">{lineEnding}</span>}
+        {tab.archiveOrigin && <span title={tab.archiveOrigin.archiveName}>from {tab.archiveOrigin.archiveName}</span>}
+        {mode === "text" && <span className="ml-auto">Ln {cursorPos.line}, Col {cursorPos.col}</span>}
+        <span className={mode === "text" ? "" : "ml-auto"}>{sourceLabel}</span>
+      </div>
+    </>
+  );
+}

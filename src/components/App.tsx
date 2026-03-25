@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore
 import {
   type FileData,
   type FileFormat,
-  canDisplayNatively,
+  shouldAutoDisplay,
   detectFormat,
   formatBytes,
   formatLabel,
@@ -16,9 +16,11 @@ import {
   isBinaryByExtension,
   SUPPORTED_ENCODINGS,
   type LineEnding,
+  toBlob,
 } from "@/lib/fileUtils";
 import {
   extractArchiveEntry,
+  isInvalidArchivePasswordError,
   loadArchiveData,
   type ArchiveData,
   type ArchiveEntrySummary,
@@ -26,7 +28,8 @@ import {
 import { type Settings, loadSettings, saveSettings } from "@/lib/settings";
 import { getRecentFiles, addRecentFile, clearRecentFiles, type RecentFile } from "@/lib/recentFiles";
 import { prettyPrintJSON, minifyJSON, prettyPrintXML, minifyXML } from "@/lib/formatters";
-import ArchiveBrowser from "./ArchiveBrowser";
+import type { TestFixture, TestFixtureId } from "@/lib/testFixtures";
+import ArchiveBrowser from "@/components/ArchiveBrowser";
 import CodeEditor, { type CodeEditorRef } from "./CodeEditor";
 import DisplayViewer from "./DisplayViewer";
 import HexViewer from "./HexViewer";
@@ -37,6 +40,8 @@ import SettingsPanel from "./SettingsPanel";
 import GoToLine from "./GoToLine";
 import DiffView from "./DiffView";
 import ShortcutGuide from "./ShortcutGuide";
+import PasswordPrompt from "./PasswordPrompt";
+import TestFixturePanel from "./TestFixturePanel";
 
 type ViewMode = "auto" | "archive" | "display" | "text" | "binary";
 type EffectiveViewMode = Exclude<ViewMode, "auto">;
@@ -90,6 +95,20 @@ interface Tab {
   sourceKey: string | null;
 }
 
+interface ArchivePasswordPromptState {
+  action: "open" | "export";
+  archiveTabId: string;
+  archiveName: string;
+  entryPaths: string[];
+  suggestedName?: string | null;
+  errorMessage: string | null;
+}
+
+interface TestModeConfig {
+  enabled: boolean;
+  autoFixtureId: TestFixtureId | null;
+}
+
 let nextId = 0;
 function genId() {
   return `tab-${++nextId}`;
@@ -97,6 +116,138 @@ function genId() {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+function isTestFixtureId(value: string | null): value is TestFixtureId {
+  return value === "locked-pdf" || value === "locked-zip";
+}
+
+function readTestModeConfig(): TestModeConfig {
+  if (typeof window === "undefined") {
+    return { enabled: false, autoFixtureId: null };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const enabled = params.get("testMode") === "1";
+  const fixtureParam = params.get("fixture");
+
+  return {
+    enabled,
+    autoFixtureId: enabled && isTestFixtureId(fixtureParam) ? fixtureParam : null,
+  };
+}
+
+function createByteBlob(
+  bytes: Uint8Array,
+  mimeType = "application/octet-stream"
+): Blob {
+  return toBlob(bytes, mimeType);
+}
+
+function getLeafName(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "download";
+}
+
+function canSaveTab(tab: Tab | null): boolean {
+  if (!tab) return false;
+  if (tab.fileData.format === "archive") return false;
+  if (tab.archiveOrigin) return true;
+  return !tab.readOnly;
+}
+
+function getSaveActionLabel(tab: Tab | null): string {
+  return tab?.archiveOrigin ? "Export Copy" : "Save File";
+}
+
+function getSaveActionTitle(tab: Tab | null): string {
+  if (!tab) return "Save file";
+  if (tab.fileData.format === "archive") {
+    return "Browse the archive to open or save an entry";
+  }
+  if (tab.archiveOrigin) {
+    return "Export extracted copy (⌘S)";
+  }
+  return tab.readOnly ? tab.readOnlyReason ?? "This tab is read-only." : "Save file (⌘S)";
+}
+
+function getArchivePasswordPromptDescription(
+  prompt: ArchivePasswordPromptState
+): string {
+  if (prompt.action === "open") {
+    return `Enter the password to open "${prompt.entryPaths[0]}" from ${prompt.archiveName}.`;
+  }
+
+  if (prompt.entryPaths.length === 1) {
+    return `Enter the password to save "${prompt.entryPaths[0]}" from ${prompt.archiveName}.`;
+  }
+
+  return `Enter the password to save ${prompt.entryPaths.length.toLocaleString()} selected entries from ${prompt.archiveName}.`;
+}
+
+function getArchivePasswordSubmitLabel(
+  prompt: ArchivePasswordPromptState
+): string {
+  if (prompt.action === "open") return "Unlock Entry";
+  return prompt.entryPaths.length === 1 ? "Save Entry" : "Save Entries";
+}
+
+function stripArchiveExtension(name: string): string {
+  return name.replace(
+    /(\.tar\.gz|\.tgz|\.zip|\.jar|\.war|\.ear|\.apk|\.tar)$/i,
+    ""
+  );
+}
+
+function buildArchiveBatchExportName(
+  archiveName: string,
+  suggestedName?: string | null
+): string {
+  const base = stripArchiveExtension(getLeafName(archiveName)) || "archive";
+  const normalizedLabel = (suggestedName ?? "selection")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "selection";
+  return `${base}-${normalizedLabel}.zip`;
+}
+
+async function writeArchiveEntryToDirectory(
+  root: FileSystemDirectoryHandle,
+  entryPath: string,
+  bytes: Uint8Array
+): Promise<void> {
+  const parts = entryPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length === 0) return;
+
+  let directory = root;
+  for (const part of parts.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(part, { create: true });
+  }
+
+  const fileName = parts[parts.length - 1]!;
+  const fileHandle = await directory.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(createByteBlob(bytes));
+  await writable.close();
+}
+
+async function createZipBytes(
+  entries: { path: string; bytes: Uint8Array }[]
+): Promise<Uint8Array> {
+  const { BlobWriter, Uint8ArrayReader, ZipWriter } = await import("@zip.js/zip.js");
+  const blobWriter = new BlobWriter("application/zip");
+  const zipWriter = new ZipWriter(blobWriter, { useWebWorkers: false });
+
+  for (const entry of entries) {
+    await zipWriter.add(
+      entry.path,
+      new Uint8ArrayReader(Uint8Array.from(entry.bytes)),
+      { useWebWorkers: false }
+    );
+  }
+
+  const blob = await zipWriter.close();
+  const buffer = await blob.arrayBuffer();
+  return new Uint8Array(buffer);
 }
 
 // ── Theme Hook ──────────────────────────────────────────────
@@ -288,15 +439,69 @@ export default function App() {
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
   const [isDragging, setIsDragging] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+  const [archivePasswordPrompt, setArchivePasswordPrompt] = useState<ArchivePasswordPromptState | null>(null);
+  const [testMode, setTestMode] = useState<TestModeConfig>({ enabled: false, autoFixtureId: null });
+  const [testFixtures, setTestFixtures] = useState<
+    ReadonlyArray<Pick<TestFixture, "id" | "label" | "description" | "password">>
+  >([]);
+  const [testFixturesLoading, setTestFixturesLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<CodeEditorRef>(null);
+  const archivePasswordsRef = useRef<Record<string, string>>({});
+  const autoLoadedFixtureRef = useRef<TestFixtureId | null>(null);
 
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
 
   useEffect(() => {
     setRecentFiles(getRecentFiles());
   }, [tabs.length]);
+
+  useEffect(() => {
+    const sync = () => setTestMode(readTestModeConfig());
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!testMode.enabled) {
+      setTestFixtures([]);
+      setTestFixturesLoading(false);
+      autoLoadedFixtureRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    setTestFixturesLoading(true);
+
+    void import("@/lib/testFixtures")
+      .then(({ TEST_FIXTURES }) => {
+        if (cancelled) return;
+        setTestFixtures(
+          TEST_FIXTURES.map(({ id, label, description, password }) => ({
+            id,
+            label,
+            description,
+            password,
+          }))
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTestFixtures([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTestFixturesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [testMode.enabled]);
 
   // ── Tab helpers ─────────────────────────────────
 
@@ -305,25 +510,32 @@ export default function App() {
   }, []);
 
   const closeTab = useCallback((id: string) => {
-    setTabs((prev) => {
-      const tab = prev.find((t) => t.id === id);
-      if (tab?.modified && !window.confirm("Unsaved changes. Close anyway?")) return prev;
-      const idx = prev.findIndex((t) => t.id === id);
-      const next = prev.filter((t) => t.id !== id);
-      if (id === activeTabId && next.length > 0) {
-        setActiveTabId(next[Math.min(idx, next.length - 1)].id);
-      } else if (next.length === 0) {
-        setActiveTabId(null);
-      }
-      return next.filter((t) => t.id !== id);
-    });
-  }, [activeTabId]);
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (tab?.modified && !window.confirm("Unsaved changes. Close anyway?")) return;
+
+    const idx = tabs.findIndex((candidate) => candidate.id === id);
+    const next = tabs.filter((candidate) => candidate.id !== id);
+
+    if (id === activeTabId && next.length > 0) {
+      setActiveTabId(next[Math.min(idx, next.length - 1)].id);
+    } else if (next.length === 0) {
+      setActiveTabId(null);
+    }
+
+    delete archivePasswordsRef.current[id];
+    setArchivePasswordPrompt((current) =>
+      current?.archiveTabId === id ? null : current
+    );
+    setTabs(next);
+  }, [activeTabId, tabs]);
 
   const closeAllTabs = useCallback(() => {
     const hasModified = tabs.some((t) => t.modified);
     if (hasModified && !window.confirm("Some tabs have unsaved changes. Close all?")) return;
     setTabs([]);
     setActiveTabId(null);
+    archivePasswordsRef.current = {};
+    setArchivePasswordPrompt(null);
   }, [tabs]);
 
   // ── File operations ─────────────────────────────
@@ -353,10 +565,9 @@ export default function App() {
       sourceKey?: string | null;
     }): Promise<Tab> => {
       const detectedFormat = detectFormat(name);
-      const isBinary =
-        isBinaryByExtension(name) || isBinaryByContent(bytes);
+      const isBinary = isBinaryByExtension(name) || isBinaryByContent(bytes);
       const format: FileFormat =
-        isBinary && detectedFormat !== "archive" ? "binary" : detectedFormat;
+        detectedFormat === "text" && isBinary ? "binary" : detectedFormat;
       const text = isBinary ? "" : decodeWithEncoding(bytes, encoding);
       const archiveData =
         format === "archive" ? await loadArchiveData(name, bytes) : null;
@@ -399,6 +610,115 @@ export default function App() {
     []
   );
 
+  const loadTestFixture = useCallback(
+    async (fixtureId: TestFixtureId) => {
+      const sourceKey = `fixture:${fixtureId}`;
+      const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+
+      try {
+        const { getTestFixtureById, getTestFixtureBytes } = await import("@/lib/testFixtures");
+        const fixture = getTestFixtureById(fixtureId);
+        const bytes = getTestFixtureBytes(fixtureId);
+
+        const tab = await buildTabFromBytes({
+          name: fixture.fileName,
+          size: bytes.byteLength,
+          bytes,
+          handle: null,
+          lastModified: Date.now(),
+          mimeType: fixture.mimeType,
+          sourceKey,
+        });
+
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+      } catch (error) {
+        window.alert(getErrorMessage(error));
+      }
+    },
+    [tabs, buildTabFromBytes]
+  );
+
+  const saveBytesAsFile = useCallback(
+    async ({
+      name,
+      bytes,
+      mimeType = "application/octet-stream",
+    }: {
+      name: string;
+      bytes: Uint8Array;
+      mimeType?: string;
+    }) => {
+      const blob = createByteBlob(bytes, mimeType);
+
+      if ("showSaveFilePicker" in window) {
+        try {
+          const handle = await (window as unknown as {
+            showSaveFilePicker: (opts?: object) => Promise<FileSystemFileHandle>;
+          }).showSaveFilePicker({
+            suggestedName: getLeafName(name),
+          });
+          const writable = await (handle as unknown as {
+            createWritable: () => Promise<{
+              write: (data: Blob) => Promise<void>;
+              close: () => Promise<void>;
+            }>;
+          }).createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          throw error;
+        }
+      }
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = getLeafName(name);
+      anchor.click();
+      URL.revokeObjectURL(url);
+    },
+    []
+  );
+
+  const saveArchiveEntriesToDirectory = useCallback(
+    async (
+      entries: { path: string; bytes: Uint8Array }[]
+    ): Promise<boolean | null> => {
+      if (!("showDirectoryPicker" in window)) return null;
+
+      try {
+        const directory = await (window as unknown as {
+          showDirectoryPicker: () => Promise<FileSystemDirectoryHandle>;
+        }).showDirectoryPicker();
+
+        for (const entry of entries) {
+          await writeArchiveEntryToDirectory(
+            directory,
+            entry.path,
+            entry.bytes
+          );
+        }
+
+        return true;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return false;
+        }
+        throw error;
+      }
+    },
+    []
+  );
+
   const loadFile = useCallback(
     async (
       file: File,
@@ -433,8 +753,20 @@ export default function App() {
     [buildTabFromBytes]
   );
 
-  const openArchiveEntry = useCallback(
-    async (archiveTab: Tab, entry: ArchiveEntrySummary) => {
+  useEffect(() => {
+    if (!testMode.enabled || !testMode.autoFixtureId) return;
+    if (autoLoadedFixtureRef.current === testMode.autoFixtureId) return;
+
+    autoLoadedFixtureRef.current = testMode.autoFixtureId;
+    void loadTestFixture(testMode.autoFixtureId);
+  }, [testMode.enabled, testMode.autoFixtureId, loadTestFixture]);
+
+  const openArchiveEntryWithPassword = useCallback(
+    async (
+      archiveTab: Tab,
+      entry: ArchiveEntrySummary,
+      password?: string
+    ) => {
       if (!archiveTab.archiveData) return;
 
       const sourceKey = `${archiveTab.id}:${entry.path}`;
@@ -448,8 +780,13 @@ export default function App() {
         const bytes = await extractArchiveEntry(
           archiveTab.fileData.bytes,
           archiveTab.archiveData,
-          entry.path
+          entry.path,
+          password
         );
+        if (password) {
+          archivePasswordsRef.current[archiveTab.id] = password;
+        }
+
         const tab = await buildTabFromBytes({
           name: entry.path,
           size: bytes.byteLength,
@@ -468,10 +805,220 @@ export default function App() {
         setTabs((prev) => [...prev, tab]);
         setActiveTabId(tab.id);
       } catch (error) {
+        if (entry.encrypted && isInvalidArchivePasswordError(error)) {
+          if (archivePasswordsRef.current[archiveTab.id] === password) {
+            delete archivePasswordsRef.current[archiveTab.id];
+          }
+          setArchivePasswordPrompt({
+            action: "open",
+            archiveTabId: archiveTab.id,
+            archiveName: archiveTab.fileData.name,
+            entryPaths: [entry.path],
+            errorMessage: "That password did not unlock this archive entry. Try another password.",
+          });
+          return;
+        }
+
         window.alert(getErrorMessage(error));
       }
     },
     [tabs, buildTabFromBytes]
+  );
+
+  const openArchiveEntry = useCallback(
+    (archiveTab: Tab, entry: ArchiveEntrySummary) => {
+      if (!archiveTab.archiveData) return;
+
+      const sourceKey = `${archiveTab.id}:${entry.path}`;
+      const existing = tabs.find((candidate) => candidate.sourceKey === sourceKey);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+
+      const cachedPassword = entry.encrypted
+        ? archivePasswordsRef.current[archiveTab.id]
+        : undefined;
+
+      if (entry.encrypted && !cachedPassword) {
+        setArchivePasswordPrompt({
+          action: "open",
+          archiveTabId: archiveTab.id,
+          archiveName: archiveTab.fileData.name,
+          entryPaths: [entry.path],
+          errorMessage: null,
+        });
+        return;
+      }
+
+      void openArchiveEntryWithPassword(archiveTab, entry, cachedPassword);
+    },
+    [tabs, openArchiveEntryWithPassword]
+  );
+
+  const exportArchiveEntriesWithPassword = useCallback(
+    async (
+      archiveTab: Tab,
+      entries: ArchiveEntrySummary[],
+      password?: string,
+      suggestedName?: string | null
+    ) => {
+      if (!archiveTab.archiveData || entries.length === 0) return;
+
+      try {
+        const extractedEntries: { path: string; bytes: Uint8Array }[] = [];
+
+        for (const entry of entries) {
+          const bytes = await extractArchiveEntry(
+            archiveTab.fileData.bytes,
+            archiveTab.archiveData,
+            entry.path,
+            entry.encrypted ? password : undefined
+          );
+          extractedEntries.push({ path: entry.path, bytes });
+        }
+
+        if (password && entries.some((entry) => entry.encrypted)) {
+          archivePasswordsRef.current[archiveTab.id] = password;
+        }
+
+        if (extractedEntries.length === 1) {
+          await saveBytesAsFile({
+            name: extractedEntries[0]!.path,
+            bytes: extractedEntries[0]!.bytes,
+          });
+          return;
+        }
+
+        const directoryResult = await saveArchiveEntriesToDirectory(
+          extractedEntries
+        );
+        if (directoryResult !== null) {
+          return;
+        }
+
+        const zipBytes = await createZipBytes(extractedEntries);
+        await saveBytesAsFile({
+          name: buildArchiveBatchExportName(
+            archiveTab.fileData.name,
+            suggestedName
+          ),
+          bytes: zipBytes,
+          mimeType: "application/zip",
+        });
+      } catch (error) {
+        if (
+          entries.some((entry) => entry.encrypted) &&
+          isInvalidArchivePasswordError(error)
+        ) {
+          if (archivePasswordsRef.current[archiveTab.id] === password) {
+            delete archivePasswordsRef.current[archiveTab.id];
+          }
+          setArchivePasswordPrompt({
+            action: "export",
+            archiveTabId: archiveTab.id,
+            archiveName: archiveTab.fileData.name,
+            entryPaths: entries.map((entry) => entry.path),
+            suggestedName,
+            errorMessage:
+              entries.length === 1
+                ? "That password did not unlock this archive entry. Try another password."
+                : "That password did not unlock one or more selected archive entries. Try another password.",
+          });
+          return;
+        }
+
+        window.alert(getErrorMessage(error));
+      }
+    },
+    [saveBytesAsFile, saveArchiveEntriesToDirectory]
+  );
+
+  const exportArchiveEntries = useCallback(
+    (
+      archiveTab: Tab,
+      entries: ArchiveEntrySummary[],
+      suggestedName?: string | null
+    ) => {
+      if (!archiveTab.archiveData || entries.length === 0) return;
+
+      const cachedPassword = entries.some((entry) => entry.encrypted)
+        ? archivePasswordsRef.current[archiveTab.id]
+        : undefined;
+
+      if (entries.some((entry) => entry.encrypted) && !cachedPassword) {
+        setArchivePasswordPrompt({
+          action: "export",
+          archiveTabId: archiveTab.id,
+          archiveName: archiveTab.fileData.name,
+          entryPaths: entries.map((entry) => entry.path),
+          suggestedName,
+          errorMessage: null,
+        });
+        return;
+      }
+
+      void exportArchiveEntriesWithPassword(
+        archiveTab,
+        entries,
+        cachedPassword,
+        suggestedName
+      );
+    },
+    [exportArchiveEntriesWithPassword]
+  );
+
+  const exportArchiveEntry = useCallback(
+    (archiveTab: Tab, entry: ArchiveEntrySummary) => {
+      void exportArchiveEntries(archiveTab, [entry], getLeafName(entry.path));
+    },
+    [exportArchiveEntries]
+  );
+
+  const handleArchivePasswordSubmit = useCallback(
+    (password: string) => {
+      if (!archivePasswordPrompt) return;
+
+      const archiveTab = tabs.find(
+        (candidate) => candidate.id === archivePasswordPrompt.archiveTabId
+      );
+      const entries =
+        archiveTab?.archiveData?.entries.filter(
+          (candidate) =>
+            !candidate.directory &&
+            archivePasswordPrompt.entryPaths.includes(candidate.path)
+        ) ?? [];
+
+      if (!archiveTab || entries.length === 0) {
+        setArchivePasswordPrompt(null);
+        return;
+      }
+
+      const entry = entries[0];
+
+      if (archivePasswordPrompt.action === "open" && (!entry || entry.directory)) {
+        setArchivePasswordPrompt(null);
+        return;
+      }
+
+      setArchivePasswordPrompt(null);
+      if (archivePasswordPrompt.action === "export") {
+        void exportArchiveEntriesWithPassword(
+          archiveTab,
+          entries,
+          password,
+          archivePasswordPrompt.suggestedName
+        );
+      } else if (entry) {
+        void openArchiveEntryWithPassword(archiveTab, entry, password);
+      }
+    },
+    [
+      archivePasswordPrompt,
+      tabs,
+      openArchiveEntryWithPassword,
+      exportArchiveEntriesWithPassword,
+    ]
   );
 
   const handleOpen = useCallback(async () => {
@@ -487,7 +1034,22 @@ export default function App() {
   }, [loadFile]);
 
   const handleSave = useCallback(async () => {
-    if (!activeTab || activeTab.readOnly || activeTab.fileData.format === "archive") return;
+    if (!activeTab) return;
+
+    if (activeTab.archiveOrigin) {
+      try {
+        await saveBytesAsFile({
+          name: activeTab.fileData.name,
+          bytes: activeTab.currentBytes,
+          mimeType: activeTab.fileData.mimeType,
+        });
+      } catch (error) {
+        window.alert(getErrorMessage(error));
+      }
+      return;
+    }
+
+    if (activeTab.readOnly || activeTab.fileData.format === "archive") return;
     const effMode = getEffectiveMode(activeTab);
 
     if (activeTab.fileData.handle) {
@@ -499,7 +1061,7 @@ export default function App() {
       } catch { /* denied */ }
     } else {
       const blob = effMode === "binary" || activeTab.fileData.isBinary
-        ? new Blob([activeTab.currentBytes.buffer as ArrayBuffer])
+        ? toBlob(activeTab.currentBytes)
         : new Blob([activeTab.currentContent], { type: "text/plain" });
 
       if ("showSaveFilePicker" in window) {
@@ -518,7 +1080,7 @@ export default function App() {
         updateTab(activeTab.id, { modified: false });
       }
     }
-  }, [activeTab, updateTab]);
+  }, [activeTab, updateTab, saveBytesAsFile]);
 
   // ── Format / Minify ─────────────────────────────
 
@@ -587,35 +1149,44 @@ export default function App() {
 
   // ── Keyboard shortcuts ──────────────────────────
 
+  const keyboardHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+
+  keyboardHandlerRef.current = (e: KeyboardEvent) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === "o") { e.preventDefault(); handleOpen(); }
+    if (mod && e.key === "s") { e.preventDefault(); handleSave(); }
+    if (mod && e.key === "w") { e.preventDefault(); if (activeTabId) closeTab(activeTabId); }
+    if (mod && e.key === "g") { e.preventDefault(); if (activeTab && !activeTab.fileData.isBinary) setShowGoToLine(true); }
+    if (mod && e.shiftKey && e.key === "P") { e.preventDefault(); setShowCommandPalette(true); }
+    if (!mod && !e.shiftKey && e.key === "?" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.closest?.(".cm-editor"))) {
+      e.preventDefault(); setShowShortcuts((v) => !v);
+    }
+    if (mod && e.key === "]") {
+      e.preventDefault();
+      if (tabs.length >= 2 && activeTabId) {
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        setActiveTabId(tabs[(idx + 1) % tabs.length].id);
+      }
+    }
+    if (mod && e.key === "[") {
+      e.preventDefault();
+      if (tabs.length >= 2 && activeTabId) {
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        setActiveTabId(tabs[(idx - 1 + tabs.length) % tabs.length].id);
+      }
+    }
+    if (mod && !e.shiftKey && e.key >= "1" && e.key <= "9") {
+      e.preventDefault();
+      const idx = parseInt(e.key) - 1;
+      if (idx < tabs.length) setActiveTabId(tabs[idx].id);
+    }
+  };
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === "o") { e.preventDefault(); handleOpen(); }
-      if (mod && e.key === "s") { e.preventDefault(); handleSave(); }
-      if (mod && e.key === "w") { e.preventDefault(); if (activeTabId) closeTab(activeTabId); }
-      if (mod && e.key === "g") { e.preventDefault(); if (activeTab && !activeTab.fileData.isBinary) setShowGoToLine(true); }
-      if (mod && e.shiftKey && e.key === "P") { e.preventDefault(); setShowCommandPalette(true); }
-      if (!mod && !e.shiftKey && e.key === "?" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.closest?.(".cm-editor"))) {
-        e.preventDefault(); setShowShortcuts((v) => !v);
-      }
-      if (mod && e.key === "]") { e.preventDefault(); switchTabRelative(1); }
-      if (mod && e.key === "[") { e.preventDefault(); switchTabRelative(-1); }
-      if (mod && !e.shiftKey && e.key >= "1" && e.key <= "9") {
-        e.preventDefault();
-        const idx = parseInt(e.key) - 1;
-        if (idx < tabs.length) setActiveTabId(tabs[idx].id);
-      }
-    };
+    const handler = (e: KeyboardEvent) => keyboardHandlerRef.current(e);
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  });
-
-  const switchTabRelative = (delta: number) => {
-    if (tabs.length < 2 || !activeTabId) return;
-    const idx = tabs.findIndex((t) => t.id === activeTabId);
-    const next = (idx + delta + tabs.length) % tabs.length;
-    setActiveTabId(tabs[next].id);
-  };
+  }, []);
 
   // ── Global drag-and-drop ────────────────────────
 
@@ -642,8 +1213,13 @@ export default function App() {
     const cmds: Command[] = [
       { id: "open", label: "Open File", shortcut: "⌘O", action: handleOpen },
     ];
-    if (activeTab && !activeTab.readOnly && activeTab.fileData.format !== "archive") {
-      cmds.push({ id: "save", label: "Save File", shortcut: "⌘S", action: handleSave });
+    if (canSaveTab(activeTab)) {
+      cmds.push({
+        id: "save",
+        label: getSaveActionLabel(activeTab),
+        shortcut: "⌘S",
+        action: handleSave,
+      });
     }
     if (activeTab) {
       cmds.push(
@@ -714,6 +1290,7 @@ export default function App() {
         <>
           <TabBar tabs={tabInfos} activeId={activeTabId} onSelect={setActiveTabId} onClose={closeTab} onNewTab={handleOpen} />
           {activeTab && <ActiveTabView
+            key={activeTab.id}
             tab={activeTab}
             theme={theme}
             settings={settings}
@@ -728,6 +1305,8 @@ export default function App() {
             onCursorChange={setCursorPos}
             onFormat={handleFormat}
             onOpenArchiveEntry={openArchiveEntry}
+            onExportArchiveEntry={exportArchiveEntry}
+            onExportArchiveEntries={exportArchiveEntries}
             onShowCommands={() => setShowCommandPalette(true)}
             onShowShortcuts={() => setShowShortcuts(true)}
           />}
@@ -753,6 +1332,23 @@ export default function App() {
         />
       )}
       {showShortcuts && <ShortcutGuide onClose={() => setShowShortcuts(false)} />}
+      {testMode.enabled && (
+        <TestFixturePanel
+          fixtures={testFixtures}
+          loading={testFixturesLoading}
+          onLoad={loadTestFixture}
+        />
+      )}
+      {archivePasswordPrompt && (
+        <PasswordPrompt
+          title="Archive password required"
+          description={getArchivePasswordPromptDescription(archivePasswordPrompt)}
+          errorMessage={archivePasswordPrompt.errorMessage}
+          submitLabel={getArchivePasswordSubmitLabel(archivePasswordPrompt)}
+          onSubmit={handleArchivePasswordSubmit}
+          onClose={() => setArchivePasswordPrompt(null)}
+        />
+      )}
     </div>
   );
 }
@@ -765,12 +1361,12 @@ function getEffectiveMode(tab: Tab): EffectiveViewMode {
   if (tab.viewMode === "text") return "text";
   if (tab.viewMode === "binary") return "binary";
   if (tab.fileData.format === "archive" && tab.archiveData) return "archive";
-  if (canDisplayNatively(tab.fileData.name, tab.fileData.mimeType, tab.fileData.format)) return "display";
+  if (shouldAutoDisplay(tab.fileData.name, tab.fileData.mimeType, tab.fileData.format)) return "display";
   if (tab.fileData.isBinary) return "binary";
   return "text";
 }
 
-function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onShowCommands, onShowShortcuts }: {
+function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef, onToggleTheme, onUpdateTab, onOpen, onSave, onClose, onCursorChange, onFormat, onOpenArchiveEntry, onExportArchiveEntry, onExportArchiveEntries, onShowCommands, onShowShortcuts }: {
   tab: Tab;
   theme: Theme;
   settings: Settings;
@@ -785,6 +1381,12 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
   onCursorChange: (pos: { line: number; col: number }) => void;
   onFormat: () => void;
   onOpenArchiveEntry: (archiveTab: Tab, entry: ArchiveEntrySummary) => void;
+  onExportArchiveEntry: (archiveTab: Tab, entry: ArchiveEntrySummary) => void;
+  onExportArchiveEntries: (
+    archiveTab: Tab,
+    entries: ArchiveEntrySummary[],
+    suggestedName?: string | null
+  ) => void;
   onShowCommands: () => void;
   onShowShortcuts: () => void;
 }) {
@@ -857,7 +1459,7 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
           <TBtn onClick={onOpen} title="Open file (⌘O)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
           </TBtn>
-          <TBtn onClick={onSave} title={tab.readOnly ? "Archive-backed tabs are read-only" : "Save file (⌘S)"} accent={tab.modified && !tab.readOnly} disabled={tab.readOnly || tab.fileData.format === "archive"}>
+          <TBtn onClick={onSave} title={getSaveActionTitle(tab)} accent={tab.modified && !tab.readOnly} disabled={!canSaveTab(tab)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
           </TBtn>
           <TBtn onClick={onShowCommands} title="Command Palette (⌘⇧P)">
@@ -880,9 +1482,14 @@ function ActiveTabView({ tab, theme, settings, cursorPos, lineEnding, editorRef,
         {mode === "archive" ? (
           tab.archiveData ? (
             <ArchiveBrowser
+              key={tab.id}
               archive={tab.archiveData}
               archiveName={tab.fileData.name}
               onOpenEntry={(entry) => onOpenArchiveEntry(tab, entry)}
+              onExportEntry={(entry) => onExportArchiveEntry(tab, entry)}
+              onExportEntries={(entries, suggestedName) =>
+                onExportArchiveEntries(tab, entries, suggestedName)
+              }
             />
           ) : (
             <div className="flex h-full items-center justify-center" style={{ color: "var(--sh-text2)" }}>

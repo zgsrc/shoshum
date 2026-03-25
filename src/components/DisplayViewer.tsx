@@ -4,9 +4,11 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo } from "react";
 import {
   formatLabel,
-  getNativeDisplayInfo,
+  getDisplayInfo,
+  toBlob,
   type FileFormat,
 } from "@/lib/fileUtils";
+import PreviewMessage from "./viewers/PreviewMessage";
 
 interface DisplayViewerProps {
   name: string;
@@ -17,44 +19,63 @@ interface DisplayViewerProps {
   isBinary: boolean;
 }
 
-function PreviewMessage({
-  title,
-  body,
-}: {
-  title: string;
-  body: string;
-}) {
-  return (
-    <div
-      className="flex h-full w-full items-center justify-center p-6"
-      style={{ backgroundColor: "var(--sh-bg)" }}
-    >
-      <div
-        className="max-w-md rounded-xl px-6 py-5 text-center"
-        style={{
-          backgroundColor: "var(--sh-bg2)",
-          border: "1px solid var(--sh-border)",
-        }}
-      >
-        <h2 className="mb-2 text-sm font-semibold" style={{ color: "var(--sh-text)" }}>
-          {title}
-        </h2>
-        <p className="text-sm leading-relaxed" style={{ color: "var(--sh-text2)" }}>
-          {body}
-        </p>
-      </div>
-    </div>
-  );
+function loadingMessage(title: string, body: string) {
+  function DisplayViewerLoadingMessage() {
+    return <PreviewMessage title={title} body={body} />;
+  }
+
+  DisplayViewerLoadingMessage.displayName = "DisplayViewerLoadingMessage";
+  return DisplayViewerLoadingMessage;
 }
 
 const PdfViewer = dynamic(() => import("./PdfViewer"), {
   ssr: false,
-  loading: () => (
-    <PreviewMessage
-      title="Preparing PDF viewer"
-      body="Loading PDF support for this file."
-    />
-  ),
+  loading: loadingMessage("Preparing PDF viewer", "Loading PDF support for this file."),
+});
+
+const StructuredDataViewer = dynamic(() => import("./viewers/StructuredDataViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing structured preview", "Parsing the document into a navigable tree."),
+});
+
+const CsvTableViewer = dynamic(() => import("./viewers/CsvTableViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing table preview", "Reading rows and columns for this file."),
+});
+
+const FontViewer = dynamic(() => import("./viewers/FontViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing font preview", "Loading the font into the browser."),
+});
+
+const GeoJsonViewer = dynamic(() => import("./viewers/GeoJsonViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing map preview", "Parsing geometry and drawing the map preview."),
+});
+
+const NotebookViewer = dynamic(() => import("./viewers/NotebookViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing notebook preview", "Loading notebook cells and outputs."),
+});
+
+const SqliteViewer = dynamic(() => import("./viewers/SqliteViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing SQLite preview", "Loading the database engine for this file."),
+});
+
+const DocxViewer = dynamic(() => import("./viewers/DocxViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing DOCX preview", "Converting the document into HTML."),
+});
+
+const SpreadsheetViewer = dynamic(() => import("./viewers/SpreadsheetViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing spreadsheet preview", "Parsing workbook sheets and cells."),
+});
+
+const PresentationViewer = dynamic(() => import("./viewers/PresentationViewer"), {
+  ssr: false,
+  loading: loadingMessage("Preparing presentation preview", "Extracting slide text from the presentation."),
 });
 
 export default function DisplayViewer({
@@ -66,17 +87,30 @@ export default function DisplayViewer({
   isBinary,
 }: DisplayViewerProps) {
   const displayInfo = useMemo(
-    () => getNativeDisplayInfo(name, mimeType, format),
+    () => getDisplayInfo(name, mimeType, format),
     [name, mimeType, format]
   );
 
   const previewBlob = useMemo(() => {
     if (!displayInfo) return null;
-    if (displayInfo.kind === "pdf") return null;
+    if (
+      displayInfo.kind === "pdf" ||
+      displayInfo.kind === "structured" ||
+      displayInfo.kind === "csv" ||
+      displayInfo.kind === "font" ||
+      displayInfo.kind === "geojson" ||
+      displayInfo.kind === "notebook" ||
+      displayInfo.kind === "sqlite" ||
+      displayInfo.kind === "docx" ||
+      displayInfo.kind === "spreadsheet" ||
+      displayInfo.kind === "presentation"
+    ) {
+      return null;
+    }
     if (!isBinary) {
       return new Blob([content], { type: displayInfo.mimeType });
     }
-    return new Blob([bytes.slice().buffer], { type: displayInfo.mimeType });
+    return toBlob(bytes, displayInfo.mimeType);
   }, [displayInfo, content, bytes, isBinary]);
 
   const objectUrl = useMemo(
@@ -102,6 +136,48 @@ export default function DisplayViewer({
 
   if (displayInfo.kind === "pdf") {
     return <PdfViewer name={name} bytes={bytes} />;
+  }
+
+  if (displayInfo.kind === "structured") {
+    return (
+      <StructuredDataViewer
+        name={name}
+        format={format as "json" | "yaml" | "xml"}
+        content={content}
+      />
+    );
+  }
+
+  if (displayInfo.kind === "csv") {
+    return <CsvTableViewer name={name} content={content} />;
+  }
+
+  if (displayInfo.kind === "font") {
+    return <FontViewer name={name} bytes={bytes} mimeType={displayInfo.mimeType} />;
+  }
+
+  if (displayInfo.kind === "geojson") {
+    return <GeoJsonViewer name={name} content={content} />;
+  }
+
+  if (displayInfo.kind === "notebook") {
+    return <NotebookViewer name={name} content={content} />;
+  }
+
+  if (displayInfo.kind === "sqlite") {
+    return <SqliteViewer name={name} bytes={bytes} />;
+  }
+
+  if (displayInfo.kind === "docx") {
+    return <DocxViewer name={name} bytes={bytes} />;
+  }
+
+  if (displayInfo.kind === "spreadsheet") {
+    return <SpreadsheetViewer name={name} bytes={bytes} />;
+  }
+
+  if (displayInfo.kind === "presentation") {
+    return <PresentationViewer name={name} bytes={bytes} />;
   }
 
   if (!objectUrl) {

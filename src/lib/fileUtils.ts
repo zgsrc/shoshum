@@ -23,14 +23,47 @@ export type FileFormat =
   | "csv"
   | "docker"
   | "dotenv"
+  | "image"
+  | "audio"
+  | "video"
+  | "pdf"
+  | "font"
+  | "geojson"
+  | "notebook"
+  | "sqlite"
+  | "docx"
+  | "spreadsheet"
+  | "presentation"
+  | "protobuf"
+  | "ruby"
+  | "swift"
+  | "lua"
+  | "r"
+  | "diff"
+  | "cmake"
   | "text"
   | "binary";
 
-export type NativeDisplayKind = "image" | "audio" | "video" | "pdf" | "html";
+export type DisplayKind =
+  | "image"
+  | "audio"
+  | "video"
+  | "pdf"
+  | "html"
+  | "structured"
+  | "csv"
+  | "font"
+  | "geojson"
+  | "notebook"
+  | "sqlite"
+  | "docx"
+  | "spreadsheet"
+  | "presentation";
 
-export interface NativeDisplayInfo {
-  kind: NativeDisplayKind;
+export interface DisplayInfo {
+  kind: DisplayKind;
   mimeType: string;
+  preferDisplay: boolean;
 }
 
 export interface FileData {
@@ -47,7 +80,18 @@ export interface FileData {
 
 export type LineEnding = "LF" | "CRLF" | "CR" | "mixed";
 
-export type ArchiveKind = "zip" | "jar" | "war" | "ear" | "apk" | "tar" | "tgz";
+export type ArchiveKind =
+  | "zip"
+  | "jar"
+  | "war"
+  | "ear"
+  | "apk"
+  | "tar"
+  | "tgz"
+  | "7z"
+  | "rar"
+  | "tbz2"
+  | "txz";
 
 export const SUPPORTED_ENCODINGS = [
   "utf-8",
@@ -74,14 +118,54 @@ const EXT_TO_FORMAT: Record<string, FileFormat> = {
   ".py": "python",
   ".pyw": "python",
   ".pyi": "python",
+  ".png": "image",
+  ".apng": "image",
+  ".jpg": "image",
+  ".jpeg": "image",
+  ".jfif": "image",
+  ".gif": "image",
+  ".bmp": "image",
+  ".ico": "image",
+  ".webp": "image",
+  ".avif": "image",
+  ".svg": "image",
+  ".mp3": "audio",
+  ".wav": "audio",
+  ".ogg": "audio",
+  ".oga": "audio",
+  ".opus": "audio",
+  ".flac": "audio",
+  ".aac": "audio",
+  ".wma": "audio",
+  ".m4a": "audio",
+  ".weba": "audio",
+  ".mp4": "video",
+  ".m4v": "video",
+  ".avi": "video",
+  ".mkv": "video",
+  ".mov": "video",
+  ".wmv": "video",
+  ".flv": "video",
+  ".webm": "video",
+  ".ogv": "video",
+  ".mpg": "video",
+  ".mpeg": "video",
+  ".3gp": "video",
+  ".3g2": "video",
+  ".pdf": "pdf",
+  ".ttf": "font",
+  ".otf": "font",
+  ".woff": "font",
+  ".woff2": "font",
+  ".eot": "font",
   ".json": "json",
   ".jsonc": "json",
   ".json5": "json",
-  ".geojson": "json",
-  ".topojson": "json",
+  ".geojson": "geojson",
+  ".topojson": "geojson",
   ".webmanifest": "json",
   ".har": "json",
-  ".ipynb": "json",
+  ".ipynb": "notebook",
   ".graphql": "graphql",
   ".gql": "graphql",
   ".graphqls": "graphql",
@@ -106,7 +190,6 @@ const EXT_TO_FORMAT: Record<string, FileFormat> = {
   ".mkdown": "markdown",
   ".rmd": "markdown",
   ".xml": "xml",
-  ".svg": "xml",
   ".xsl": "xml",
   ".xslt": "xml",
   ".plist": "xml",
@@ -115,6 +198,15 @@ const EXT_TO_FORMAT: Record<string, FileFormat> = {
   ".xsd": "xml",
   ".wsdl": "xml",
   ".java": "java",
+  ".rb": "ruby",
+  ".gemspec": "ruby",
+  ".swift": "swift",
+  ".lua": "lua",
+  ".r": "r",
+  ".proto": "protobuf",
+  ".diff": "diff",
+  ".patch": "diff",
+  ".cmake": "cmake",
   ".c": "cpp",
   ".h": "cpp",
   ".cpp": "cpp",
@@ -172,6 +264,17 @@ const EXT_TO_FORMAT: Record<string, FileFormat> = {
   ".env": "dotenv",
   ".csv": "csv",
   ".tsv": "csv",
+  ".sqlite": "sqlite",
+  ".sqlite3": "sqlite",
+  ".db": "sqlite",
+  ".docx": "docx",
+  ".xlsx": "spreadsheet",
+  ".xlsm": "spreadsheet",
+  ".xlsb": "spreadsheet",
+  ".xls": "spreadsheet",
+  ".ods": "spreadsheet",
+  ".pptx": "presentation",
+  ".pptm": "presentation",
   ".txt": "text",
   ".log": "text",
   ".gitignore": "text",
@@ -188,6 +291,7 @@ const BASENAME_TO_FORMAT: Record<string, FileFormat> = {
   gnumakefile: "shell",
   dockerfile: "docker",
   containerfile: "docker",
+  "cmakelists.txt": "cmake",
   ".bashrc": "shell",
   ".bash_profile": "shell",
   ".bash_logout": "shell",
@@ -213,6 +317,11 @@ const EXT_TO_MIME_TYPE: Record<string, string> = {
   ".webp": "image/webp",
   ".avif": "image/avif",
   ".svg": "image/svg+xml",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".eot": "application/vnd.ms-fontobject",
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
@@ -237,6 +346,19 @@ const EXT_TO_MIME_TYPE: Record<string, string> = {
   ".3gp": "video/3gpp",
   ".3g2": "video/3gpp2",
   ".pdf": "application/pdf",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".geojson": "application/geo+json",
+  ".topojson": "application/json",
+  ".ipynb": "application/x-ipynb+json",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+  ".xlsb": "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+  ".xls": "application/vnd.ms-excel",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
   ".html": "text/html",
   ".htm": "text/html",
   ".xhtml": "application/xhtml+xml",
@@ -247,7 +369,7 @@ const BINARY_EXTENSIONS = new Set([
   ".mp3", ".wav", ".ogg", ".oga", ".opus", ".flac", ".aac", ".wma", ".m4a", ".weba",
   ".mp4", ".m4v", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".ogv", ".mpg", ".mpeg", ".3gp", ".3g2",
   ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst",
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods", ".ppt", ".pptx", ".pptm",
   ".exe", ".dll", ".so", ".dylib", ".bin", ".dat", ".wasm",
   ".woff", ".woff2", ".ttf", ".otf", ".eot",
   ".class", ".pyc", ".pyo", ".o", ".obj", ".a", ".lib", ".jar", ".war", ".ear",
@@ -265,6 +387,8 @@ const ZIP_ARCHIVE_EXTENSIONS: Record<string, ArchiveKind> = {
   ".war": "war",
   ".ear": "ear",
   ".apk": "apk",
+  ".7z": "7z",
+  ".rar": "rar",
 };
 
 const AUDIO_EXTENSIONS = new Set([
@@ -277,6 +401,22 @@ const VIDEO_EXTENSIONS = new Set([
 
 const HTML_EXTENSIONS = new Set([
   ".html", ".htm", ".xhtml",
+]);
+
+const FONT_EXTENSIONS = new Set([
+  ".ttf", ".otf", ".woff", ".woff2", ".eot",
+]);
+
+const SQLITE_EXTENSIONS = new Set([
+  ".sqlite", ".sqlite3", ".db",
+]);
+
+const SPREADSHEET_EXTENSIONS = new Set([
+  ".xlsx", ".xlsm", ".xlsb", ".xls", ".ods",
+]);
+
+const PRESENTATION_EXTENSIONS = new Set([
+  ".pptx", ".pptm",
 ]);
 
 function getExtension(filename: string): string {
@@ -317,6 +457,10 @@ export function isImageFile(filename: string): boolean {
 export function detectArchiveKind(filename: string): ArchiveKind | null {
   const lower = filename.toLowerCase();
   if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) return "tgz";
+  if (lower.endsWith(".tar.bz2") || lower.endsWith(".tbz2") || lower.endsWith(".tbz")) {
+    return "tbz2";
+  }
+  if (lower.endsWith(".tar.xz") || lower.endsWith(".txz")) return "txz";
 
   const ext = getExtension(lower);
   if (ext === ".tar") return "tar";
@@ -327,28 +471,64 @@ export function isArchiveFile(filename: string): boolean {
   return detectArchiveKind(filename) !== null;
 }
 
-export function getNativeDisplayInfo(
+export function getDisplayInfo(
   filename: string,
   mimeType: string,
   format: FileFormat
-): NativeDisplayInfo | null {
+): DisplayInfo | null {
   const ext = getExtension(filename);
   const resolvedMimeType = getMimeType(filename, mimeType || "application/octet-stream");
 
-  if (resolvedMimeType === "application/pdf" || ext === ".pdf") {
-    return { kind: "pdf", mimeType: "application/pdf" };
+  if (format === "pdf" || resolvedMimeType === "application/pdf" || ext === ".pdf") {
+    return { kind: "pdf", mimeType: "application/pdf", preferDisplay: true };
   }
 
-  if (resolvedMimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(ext)) {
-    return { kind: "image", mimeType: resolvedMimeType };
+  if (format === "image" || resolvedMimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(ext)) {
+    return { kind: "image", mimeType: resolvedMimeType, preferDisplay: true };
   }
 
-  if (resolvedMimeType.startsWith("audio/") || AUDIO_EXTENSIONS.has(ext)) {
-    return { kind: "audio", mimeType: resolvedMimeType };
+  if (format === "audio" || resolvedMimeType.startsWith("audio/") || AUDIO_EXTENSIONS.has(ext)) {
+    return { kind: "audio", mimeType: resolvedMimeType, preferDisplay: true };
   }
 
-  if (resolvedMimeType.startsWith("video/") || VIDEO_EXTENSIONS.has(ext)) {
-    return { kind: "video", mimeType: resolvedMimeType };
+  if (format === "video" || resolvedMimeType.startsWith("video/") || VIDEO_EXTENSIONS.has(ext)) {
+    return { kind: "video", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "font" || FONT_EXTENSIONS.has(ext)) {
+    return { kind: "font", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "geojson") {
+    return { kind: "geojson", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "notebook") {
+    return { kind: "notebook", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "sqlite" || SQLITE_EXTENSIONS.has(ext)) {
+    return { kind: "sqlite", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "docx") {
+    return { kind: "docx", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "spreadsheet" || SPREADSHEET_EXTENSIONS.has(ext)) {
+    return { kind: "spreadsheet", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "presentation" || PRESENTATION_EXTENSIONS.has(ext)) {
+    return { kind: "presentation", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "csv") {
+    return { kind: "csv", mimeType: resolvedMimeType, preferDisplay: true };
+  }
+
+  if (format === "json" || format === "yaml" || format === "xml") {
+    return { kind: "structured", mimeType: resolvedMimeType, preferDisplay: false };
   }
 
   if (
@@ -360,14 +540,23 @@ export function getNativeDisplayInfo(
     return {
       kind: "html",
       mimeType: resolvedMimeType === "application/octet-stream" ? "text/html" : resolvedMimeType,
+      preferDisplay: true,
     };
   }
 
   return null;
 }
 
+export function canDisplayFile(filename: string, mimeType: string, format: FileFormat): boolean {
+  return getDisplayInfo(filename, mimeType, format) !== null;
+}
+
+export function shouldAutoDisplay(filename: string, mimeType: string, format: FileFormat): boolean {
+  return getDisplayInfo(filename, mimeType, format)?.preferDisplay ?? false;
+}
+
 export function canDisplayNatively(filename: string, mimeType: string, format: FileFormat): boolean {
-  return getNativeDisplayInfo(filename, mimeType, format) !== null;
+  return canDisplayFile(filename, mimeType, format);
 }
 
 export function detectFormat(filename: string): FileFormat {
@@ -379,8 +568,8 @@ export function detectFormat(filename: string): FileFormat {
   const base = filename.toLowerCase();
   if (base.startsWith(".env.")) return "dotenv";
   if (BASENAME_TO_FORMAT[base]) return BASENAME_TO_FORMAT[base];
-  if (base === "vagrantfile") return "text";
-  if (base === "gemfile" || base === "rakefile") return "text";
+  if (base === "vagrantfile") return "ruby";
+  if (base === "gemfile" || base === "rakefile") return "ruby";
 
   if (BINARY_EXTENSIONS.has(ext)) return "binary";
 
@@ -444,6 +633,24 @@ export function formatLabel(format: FileFormat): string {
     csv: "CSV/TSV",
     docker: "Dockerfile",
     dotenv: "Dotenv",
+    image: "Image",
+    audio: "Audio",
+    video: "Video",
+    pdf: "PDF",
+    font: "Font",
+    geojson: "GeoJSON",
+    notebook: "Notebook",
+    sqlite: "SQLite",
+    docx: "Word Document",
+    spreadsheet: "Spreadsheet",
+    presentation: "Presentation",
+    protobuf: "Protocol Buffers",
+    ruby: "Ruby",
+    swift: "Swift",
+    lua: "Lua",
+    r: "R",
+    diff: "Diff/Patch",
+    cmake: "CMake",
     text: "Plain Text",
     binary: "Binary",
   };
@@ -476,7 +683,7 @@ export async function readFile(file: File, encoding: string = "utf-8"): Promise<
   return { bytes, text, isBinary: binary };
 }
 
-export function getImageMimeType(filename: string): string {
-  const mimeType = getMimeType(filename, "image/png");
-  return mimeType.startsWith("image/") ? mimeType : "image/png";
+export function toBlob(bytes: Uint8Array, type?: string): Blob {
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([buf], type ? { type } : undefined);
 }

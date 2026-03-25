@@ -34,6 +34,7 @@ import {
   foldGutter,
   foldKeymap,
   LanguageSupport,
+  StreamLanguage,
 } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import {
@@ -91,10 +92,141 @@ const lightTheme: Extension = EditorView.theme({
   },
 });
 
+function legacyLanguageSupport(mode: Parameters<typeof StreamLanguage.define>[0]) {
+  return new LanguageSupport(StreamLanguage.define(mode));
+}
+
+const GRAPHQL_KEYWORDS = new Set([
+  "type",
+  "interface",
+  "union",
+  "enum",
+  "scalar",
+  "input",
+  "schema",
+  "extend",
+  "directive",
+  "query",
+  "mutation",
+  "subscription",
+  "fragment",
+  "on",
+  "implements",
+  "repeatable",
+  "true",
+  "false",
+  "null",
+]);
+
+const GRAPHQL_BUILTINS = new Set(["ID", "String", "Int", "Float", "Boolean"]);
+
+const graphqlMode = {
+  name: "graphql",
+  startState() {
+    return { inBlockString: false };
+  },
+  token(stream: {
+    eatSpace: () => boolean;
+    match: (value: string | RegExp, consume?: boolean, caseInsensitive?: boolean) => RegExpMatchArray | boolean | null;
+    next: () => string | void;
+    peek: () => string | void;
+    eatWhile: (match: RegExp | ((char: string) => boolean)) => boolean;
+    skipToEnd: () => void;
+    current: () => string;
+  }, state: { inBlockString: boolean }): string | null {
+    if (stream.eatSpace()) return null;
+
+    if (state.inBlockString) {
+      if (stream.match(/.*?"""/)) {
+        state.inBlockString = false;
+      } else {
+        stream.skipToEnd();
+      }
+      return "string";
+    }
+
+    if (stream.match('"""')) {
+      state.inBlockString = true;
+      return "string";
+    }
+    if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return "string";
+    if (stream.match(/^#.*$/)) return "comment";
+    if (stream.match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)) return "number";
+    if (stream.match(/^@[A-Za-z_][\w]*/)) return "meta";
+    if (stream.match(/^\$\w+/)) return "variableName";
+    if (stream.match(/^![=]?|^[:=(){}\[\]|&]/)) return "operator";
+
+    const ch = stream.peek();
+    if (ch && /[A-Za-z_]/.test(ch)) {
+      stream.next();
+      stream.eatWhile(/[\w]/);
+      const word = stream.current();
+      if (GRAPHQL_KEYWORDS.has(word)) return "keyword";
+      if (GRAPHQL_BUILTINS.has(word)) return "typeName";
+      return "variableName";
+    }
+
+    stream.next();
+    return null;
+  },
+};
+
+const csvMode = {
+  name: "csv",
+  startState() {
+    return { inQuotedField: false };
+  },
+  token(stream: {
+    sol: () => boolean;
+    eol: () => boolean;
+    next: () => string | void;
+    peek: () => string | void;
+    eatSpace: () => boolean;
+    match: (value: string | RegExp, consume?: boolean, caseInsensitive?: boolean) => RegExpMatchArray | boolean | null;
+    skipToEnd: () => void;
+  }, state: { inQuotedField: boolean }): string | null {
+    if (!state.inQuotedField && stream.eatSpace()) return null;
+
+    if (state.inQuotedField) {
+      while (!stream.eol()) {
+        if (stream.match(/""/)) continue;
+        if (stream.match('"')) {
+          state.inQuotedField = false;
+          break;
+        }
+        stream.next();
+      }
+      return "string";
+    }
+
+    if (stream.match('"')) {
+      state.inQuotedField = true;
+      return "string";
+    }
+    if (stream.match(/[,\t;]/)) return "separator";
+    if (stream.match(/-?(?:0|[1-9]\d*)(?:\.\d+)?/)) return "number";
+    if (stream.match(/(?:true|false|null|yes|no)/i)) return "atom";
+    if (stream.sol() && stream.peek() === "#") {
+      stream.skipToEnd();
+      return "comment";
+    }
+    while (!stream.eol()) {
+      const next = stream.peek();
+      if (next == null || next === "," || next === "\t" || next === ";" || next === '"') {
+        break;
+      }
+      stream.next();
+    }
+    return "string";
+  },
+};
+
 async function getLanguageExtension(
   format: FileFormat
 ): Promise<LanguageSupport | null> {
   switch (format) {
+    case "graphql":
+      return legacyLanguageSupport(graphqlMode);
     case "javascript": {
       const { javascript } = await import("@codemirror/lang-javascript");
       return javascript({ jsx: true, typescript: false });
@@ -131,6 +263,34 @@ async function getLanguageExtension(
       const { java } = await import("@codemirror/lang-java");
       return java();
     }
+    case "ruby": {
+      const { ruby } = await import("@codemirror/legacy-modes/mode/ruby");
+      return legacyLanguageSupport(ruby);
+    }
+    case "swift": {
+      const { swift } = await import("@codemirror/legacy-modes/mode/swift");
+      return legacyLanguageSupport(swift);
+    }
+    case "lua": {
+      const { lua } = await import("@codemirror/legacy-modes/mode/lua");
+      return legacyLanguageSupport(lua);
+    }
+    case "r": {
+      const { r } = await import("@codemirror/legacy-modes/mode/r");
+      return legacyLanguageSupport(r);
+    }
+    case "protobuf": {
+      const { protobuf } = await import("@codemirror/legacy-modes/mode/protobuf");
+      return legacyLanguageSupport(protobuf);
+    }
+    case "diff": {
+      const { diff } = await import("@codemirror/legacy-modes/mode/diff");
+      return legacyLanguageSupport(diff);
+    }
+    case "cmake": {
+      const { cmake } = await import("@codemirror/legacy-modes/mode/cmake");
+      return legacyLanguageSupport(cmake);
+    }
     case "cpp": {
       const { cpp } = await import("@codemirror/lang-cpp");
       return cpp();
@@ -155,6 +315,26 @@ async function getLanguageExtension(
       const { go } = await import("@codemirror/lang-go");
       return go();
     }
+    case "shell": {
+      const { shell } = await import("@codemirror/legacy-modes/mode/shell");
+      return legacyLanguageSupport(shell);
+    }
+    case "toml": {
+      const { toml } = await import("@codemirror/legacy-modes/mode/toml");
+      return legacyLanguageSupport(toml);
+    }
+    case "ini":
+    case "properties":
+    case "dotenv": {
+      const { properties } = await import("@codemirror/legacy-modes/mode/properties");
+      return legacyLanguageSupport(properties);
+    }
+    case "docker": {
+      const { dockerFile } = await import("@codemirror/legacy-modes/mode/dockerfile");
+      return legacyLanguageSupport(dockerFile);
+    }
+    case "csv":
+      return legacyLanguageSupport(csvMode);
     default:
       return null;
   }
@@ -200,6 +380,8 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
     const viewRef = useRef<EditorView | null>(null);
     const onChangeRef = useRef(onChange);
     const onCursorRef = useRef(onCursorChange);
+    const contentRef = useRef(content);
+    const isExternalUpdateRef = useRef(false);
     const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
     const [minimapTick, setMinimapTick] = useState(0);
 
@@ -292,8 +474,12 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
         }),
         EditorState.tabSize.of(tabSize),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged && onChangeRef.current) {
-            onChangeRef.current(update.state.doc.toString());
+          if (update.docChanged) {
+            const newContent = update.state.doc.toString();
+            contentRef.current = newContent;
+            if (!isExternalUpdateRef.current && onChangeRef.current) {
+              onChangeRef.current(newContent);
+            }
           }
           if (update.selectionSet && onCursorRef.current) {
             const pos = update.state.selection.main.head;
@@ -315,7 +501,7 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
       if (langExt) extensions.push(langExt);
       if (readOnly) extensions.push(EditorState.readOnly.of(true));
 
-      const state = EditorState.create({ doc: content, extensions });
+      const state = EditorState.create({ doc: contentRef.current, extensions });
 
       viewRef.current = new EditorView({
         state,
@@ -329,9 +515,10 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
       if (onCursorRef.current) {
         onCursorRef.current(1, 1);
       }
-    }, [content, format, theme, readOnly, wordWrap, fontSize, tabSize, showLineNumbers, showMinimap]);
+    }, [format, theme, readOnly, wordWrap, fontSize, tabSize, showLineNumbers, showMinimap]);
 
     useEffect(() => {
+      contentRef.current = content;
       initEditor();
       return () => {
         if (viewRef.current) {
@@ -339,7 +526,22 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
           viewRef.current = null;
         }
       };
-    }, [initEditor]);
+    }, [initEditor]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+      const view = viewRef.current;
+      if (!view) return;
+      if (content === contentRef.current) return;
+      contentRef.current = content;
+      const currentDoc = view.state.doc.toString();
+      if (content !== currentDoc) {
+        isExternalUpdateRef.current = true;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: content },
+        });
+        isExternalUpdateRef.current = false;
+      }
+    }, [content]);
 
     useEffect(() => {
       if (!showMinimap || !minimapCanvasRef.current || !viewRef.current) return;

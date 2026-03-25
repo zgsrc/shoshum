@@ -252,7 +252,6 @@ export default function PdfViewer({ bytes, name }: PdfViewerProps) {
       renderTaskRef.current?.cancel();
       const renderTask = page.render({
         canvas,
-        canvasContext: context,
         viewport,
         transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
       });

@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { marked } from "marked";
+import { sanitizeHtml } from "@/lib/sanitizeHtml";
 
 interface MarkdownPreviewProps {
   content: string;
@@ -10,7 +11,8 @@ interface MarkdownPreviewProps {
 export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
   const html = useMemo(() => {
     try {
-      return marked.parse(content, { async: false }) as string;
+      const raw = marked.parse(content, { async: false }) as string;
+      return sanitizeHtml(raw);
     } catch {
       return "<p>Failed to parse markdown</p>";
     }

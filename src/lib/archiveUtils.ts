@@ -1,8 +1,9 @@
-import { detectArchiveKind, formatBytes, type ArchiveKind } from "@/lib/fileUtils";
+import { detectArchiveKind, formatBytes, toBlob, type ArchiveKind } from "@/lib/fileUtils";
 
 export const MAX_ARCHIVE_INPUT_BYTES = 64 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRY_BYTES = 24 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 5000;
+export const INVALID_ARCHIVE_PASSWORD_MESSAGE = "Invalid password";
 
 const MAX_TAR_PAYLOAD_BYTES = 128 * 1024 * 1024;
 const TAR_BLOCK_BYTES = 512;
@@ -20,6 +21,7 @@ export interface ArchiveEntrySummary {
 export interface ArchiveData {
   kind: ArchiveKind;
   entries: ArchiveEntrySummary[];
+  sourceName?: string;
   tarBytes?: Uint8Array;
 }
 
@@ -41,7 +43,16 @@ export async function loadArchiveData(
   if (isZipArchiveKind(kind)) {
     return {
       kind,
+      sourceName: fileName,
       entries: await readZipEntries(bytes),
+    };
+  }
+
+  if (isLibarchiveKind(kind)) {
+    return {
+      kind,
+      sourceName: fileName,
+      entries: await readLibarchiveEntries(fileName, bytes),
     };
   }
 
@@ -54,6 +65,7 @@ export async function loadArchiveData(
 
   return {
     kind,
+    sourceName: fileName,
     entries: readTarEntries(tarBytes),
     tarBytes,
   };
@@ -62,7 +74,8 @@ export async function loadArchiveData(
 export async function extractArchiveEntry(
   archiveBytes: Uint8Array,
   archiveData: ArchiveData,
-  entryPath: string
+  entryPath: string,
+  password?: string
 ): Promise<Uint8Array> {
   const entry = archiveData.entries.find(
     (candidate) => !candidate.directory && candidate.path === entryPath
@@ -73,7 +86,9 @@ export async function extractArchiveEntry(
   }
 
   if (entry.encrypted) {
-    throw new Error("Encrypted archive entries are not supported yet.");
+    if (!password) {
+      throw new Error("This ZIP entry requires a password.");
+    }
   }
 
   if (entry.size > MAX_ARCHIVE_ENTRY_BYTES) {
@@ -83,7 +98,16 @@ export async function extractArchiveEntry(
   }
 
   if (isZipArchiveKind(archiveData.kind)) {
-    return readZipEntry(archiveBytes, entry.path);
+    return readZipEntry(archiveBytes, entry.path, password);
+  }
+
+  if (isLibarchiveKind(archiveData.kind)) {
+    return readLibarchiveEntry(
+      archiveData.sourceName ?? `archive.${archiveData.kind}`,
+      archiveBytes,
+      entry.path,
+      password
+    );
   }
 
   const tarBytes =
@@ -104,13 +128,21 @@ export async function extractArchiveEntry(
   return tarBytes.slice(dataOffset, dataOffset + entry.size);
 }
 
+export function isInvalidArchivePasswordError(error: unknown): boolean {
+  return error instanceof Error && error.message === INVALID_ARCHIVE_PASSWORD_MESSAGE;
+}
+
 function isZipArchiveKind(kind: ArchiveKind): boolean {
   return kind === "zip" || kind === "jar" || kind === "war" || kind === "ear" || kind === "apk";
 }
 
+function isLibarchiveKind(kind: ArchiveKind): boolean {
+  return kind === "7z" || kind === "rar" || kind === "tbz2" || kind === "txz";
+}
+
 async function readZipEntries(bytes: Uint8Array): Promise<ArchiveEntrySummary[]> {
   const { BlobReader, ZipReader } = await import("@zip.js/zip.js");
-  const reader = new ZipReader(new BlobReader(new Blob([bytes.buffer as ArrayBuffer])), {
+  const reader = new ZipReader(new BlobReader(toBlob(bytes)), {
     useWebWorkers: false,
   });
 
@@ -144,10 +176,11 @@ async function readZipEntries(bytes: Uint8Array): Promise<ArchiveEntrySummary[]>
 
 async function readZipEntry(
   bytes: Uint8Array,
-  entryPath: string
+  entryPath: string,
+  password?: string
 ): Promise<Uint8Array> {
-  const { BlobReader, ZipReader } = await import("@zip.js/zip.js");
-  const reader = new ZipReader(new BlobReader(new Blob([bytes.buffer as ArrayBuffer])), {
+  const { BlobReader, ZipReader, ERR_INVALID_PASSWORD } = await import("@zip.js/zip.js");
+  const reader = new ZipReader(new BlobReader(toBlob(bytes)), {
     useWebWorkers: false,
   });
 
@@ -164,7 +197,9 @@ async function readZipEntry(
     }
 
     if (entry.encrypted) {
-      throw new Error("Encrypted ZIP entries are not supported yet.");
+      if (!password) {
+        throw new Error("This ZIP entry requires a password.");
+      }
     }
 
     if (entry.uncompressedSize > MAX_ARCHIVE_ENTRY_BYTES) {
@@ -173,14 +208,109 @@ async function readZipEntry(
       );
     }
 
-    const buffer = await entry.arrayBuffer({ useWebWorkers: false });
-    return new Uint8Array(buffer);
+    try {
+      const buffer = await entry.arrayBuffer(
+        password
+          ? { useWebWorkers: false, password }
+          : { useWebWorkers: false }
+      );
+      return new Uint8Array(buffer);
+    } catch (error) {
+      if (error instanceof Error && error.message === ERR_INVALID_PASSWORD) {
+        throw new Error(INVALID_ARCHIVE_PASSWORD_MESSAGE);
+      }
+      throw error;
+    }
   } finally {
     try {
       await reader.close();
     } catch {
       // Ignore close errors after failed reads.
     }
+  }
+}
+
+async function readLibarchiveEntries(
+  fileName: string,
+  bytes: Uint8Array
+): Promise<ArchiveEntrySummary[]> {
+  const { Archive } = await import("libarchive.js");
+  const archive = await Archive.open(
+    new File([toBlob(bytes)], fileName, { type: "application/octet-stream" })
+  );
+
+  try {
+    const archiveEncrypted = await archive.hasEncryptedData().catch(() => null);
+    const files = await archive.getFilesArray();
+
+    if (files.length > MAX_ARCHIVE_ENTRIES) {
+      throw new Error(
+        `Archives with more than ${MAX_ARCHIVE_ENTRIES.toLocaleString()} entries are not supported yet.`
+      );
+    }
+
+    const entries = files.reduce<ArchiveEntrySummary[]>((acc, item) => {
+        const compressedFile = item.file as {
+          name?: string;
+          size?: number;
+          lastModified?: number;
+        } | null;
+
+        if (!compressedFile?.name) return acc;
+
+        const path = normalizeArchivePath(
+          `${typeof item.path === "string" ? item.path : ""}${compressedFile.name}`,
+          false
+        );
+        if (!path) return acc;
+
+        acc.push({
+          path,
+          size: compressedFile.size ?? 0,
+          compressedSize: null,
+          directory: false,
+          encrypted: archiveEncrypted === true,
+          lastModified:
+            typeof compressedFile.lastModified === "number"
+              ? compressedFile.lastModified
+              : null,
+        } satisfies ArchiveEntrySummary);
+
+        return acc;
+      }, []);
+
+    return entries.sort(compareArchiveEntries);
+  } finally {
+    await archive.close().catch(() => {});
+  }
+}
+
+async function readLibarchiveEntry(
+  fileName: string,
+  bytes: Uint8Array,
+  entryPath: string,
+  password?: string
+): Promise<Uint8Array> {
+  const { Archive } = await import("libarchive.js");
+  const archive = await Archive.open(
+    new File([toBlob(bytes)], fileName, { type: "application/octet-stream" })
+  );
+
+  try {
+    if (password) {
+      await archive.usePassword(password);
+    }
+
+    const file = await archive.extractSingleFile(entryPath);
+    const buffer = await file.arrayBuffer();
+    return new Uint8Array(buffer);
+  } catch (error) {
+    if (looksLikeInvalidArchivePassword(error)) {
+      throw new Error(INVALID_ARCHIVE_PASSWORD_MESSAGE);
+    }
+    throw error;
+  } finally {
+    await archive.close().catch(() => {});
   }
 }
 
@@ -191,6 +321,18 @@ async function gunzipArchive(bytes: Uint8Array): Promise<Uint8Array> {
   } catch {
     throw new Error("This gzip-compressed TAR archive could not be decompressed.");
   }
+}
+
+function looksLikeInvalidArchivePassword(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("password") ||
+    message.includes("passphrase") ||
+    message.includes("encrypted") ||
+    message.includes("crypt") ||
+    message.includes("incorrect")
+  );
 }
 
 function readTarEntries(tarBytes: Uint8Array): ArchiveEntrySummary[] {

@@ -60,6 +60,19 @@
   --sh-ring-offset: #ffffff;
 }
 
+:root {
+  --sh-titlebar-inset: 0px;
+}
+
+/* Electron macOS: inset for traffic-light buttons + draggable title region */
+[data-electron-platform="darwin"] .sh-titlebar {
+  padding-left: var(--sh-titlebar-inset);
+  -webkit-app-region: drag;
+}
+[data-electron-platform="darwin"] .sh-titlebar-nodrag {
+  -webkit-app-region: no-drag;
+}
+
 html, body {
   margin: 0;
   padding: 0;

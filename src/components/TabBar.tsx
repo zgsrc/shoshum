@@ -53,10 +53,10 @@ export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab, on
 
   return (
     <div
-      className="flex items-center h-9 shrink-0 select-none"
+      className="sh-titlebar flex items-center h-9 shrink-0 select-none"
       style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}
     >
-      <div ref={scrollRef} className="flex items-center flex-1 overflow-x-auto min-w-0 scrollbar-none">
+      <div ref={scrollRef} className="sh-titlebar-nodrag flex items-center flex-1 overflow-x-auto min-w-0 scrollbar-none">
         {tabs.map((tab, idx) => {
           const isActive = tab.id === activeId;
           const isDragOver = dragState !== null && dragState.overIdx === idx && dragState.dragIdx !== idx;
@@ -114,7 +114,7 @@ export default function TabBar({ tabs, activeId, onSelect, onClose, onNewTab, on
         })}
       </div>
       <button
-        className="flex items-center justify-center w-9 h-9 shrink-0 transition-colors"
+        className="sh-titlebar-nodrag flex items-center justify-center w-9 h-9 shrink-0 transition-colors"
         style={{ color: "var(--sh-text-muted)" }}
         onMouseEnter={(e) => {
           e.currentTarget.style.color = "var(--sh-text)";

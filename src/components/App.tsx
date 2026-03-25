@@ -393,12 +393,14 @@ function LandingPage({ onFile, onOpenPicker, themePreference, onToggleTheme, rec
 
   return (
     <>
-      <header className="flex items-center justify-between h-10 px-3 shrink-0" style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}>
+      <header className="sh-titlebar flex items-center justify-between h-10 px-3 shrink-0" style={{ backgroundColor: "var(--sh-bg2)", borderBottom: "1px solid var(--sh-border)" }}>
         <div className="w-8" />
         <h1 className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)" }}>shoshum</h1>
-        <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
-          {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
-        </TBtn>
+        <div className="sh-titlebar-nodrag">
+          <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
+            {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
+          </TBtn>
+        </div>
       </header>
       <div
         className="flex flex-col items-center justify-center flex-1 transition-colors"
@@ -428,6 +430,17 @@ function LandingPage({ onFile, onOpenPicker, themePreference, onToggleTheme, rec
           <div className="flex items-center gap-4 text-xs" style={{ color: "var(--sh-text-muted)" }}>
             <span>⌘O open</span><span>⌘S save</span><span>⌘⇧P commands</span><span>? shortcuts</span>
           </div>
+          {typeof window !== "undefined" && !(window as unknown as { electronAPI?: unknown }).electronAPI && (
+            <a
+              href="/download"
+              className="text-xs transition-colors"
+              style={{ color: "var(--sh-text-muted)", textDecoration: "none" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--sh-accent-blue)")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--sh-text-muted)")}
+            >
+              Download desktop app →
+            </a>
+          )}
 
           {recentFiles.length > 0 && (
             <div className="w-full mt-4">
@@ -508,6 +521,16 @@ export default function App() {
     }
     setActiveTabId(newId);
   }, [activeTabId]);
+
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: { platform: string } }).electronAPI;
+    if (api) {
+      document.documentElement.dataset.electronPlatform = api.platform;
+      if (api.platform === "darwin") {
+        document.documentElement.style.setProperty("--sh-titlebar-inset", "86px");
+      }
+    }
+  }, []);
 
   useEffect(() => {
     setRecentFiles(getRecentFiles());
@@ -1270,6 +1293,21 @@ export default function App() {
     window.addEventListener("dragover", onOver);
     window.addEventListener("drop", onDrop);
     return () => { window.removeEventListener("dragenter", onEnter); window.removeEventListener("dragleave", onLeave); window.removeEventListener("dragover", onOver); window.removeEventListener("drop", onDrop); };
+  }, [loadFile]);
+
+  // ── Electron IPC: open file from native OS ──────
+
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: {
+      onOpenFile: (cb: (data: { name: string; bytes: number[]; lastModified: number }) => void) => () => void;
+    } }).electronAPI;
+    if (!api) return;
+
+    return api.onOpenFile((data) => {
+      const bytes = new Uint8Array(data.bytes);
+      const file = new File([bytes], data.name, { lastModified: data.lastModified });
+      loadFile(file, null);
+    });
   }, [loadFile]);
 
   // ── Command Palette commands ────────────────────

@@ -1,0 +1,122 @@
+name: Build Electron Apps
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export
+        run: NEXT_OUTPUT=export npx next build
+
+      - name: Build Electron (macOS)
+        run: npx electron-builder --config electron-builder.config.js --mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shoshum-mac
+          path: |
+            dist-electron/*.dmg
+            dist-electron/*.zip
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export
+        run: npx cross-env NEXT_OUTPUT=export npx next build
+
+      - name: Build Electron (Windows)
+        run: npx electron-builder --config electron-builder.config.js --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shoshum-windows
+          path: |
+            dist-electron/*.exe
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export
+        run: NEXT_OUTPUT=export npx next build
+
+      - name: Build Electron (Linux)
+        run: npx electron-builder --config electron-builder.config.js --linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shoshum-linux
+          path: |
+            dist-electron/*.AppImage
+            dist-electron/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: [build-mac, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            artifacts/shoshum-mac/*
+            artifacts/shoshum-windows/*
+            artifacts/shoshum-linux/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -62,42 +62,16 @@ module.exports = {
     artifactName: "shoshum-linux-${arch}.deb",
   },
   fileAssociations: [
-    {
-      ext: ["txt", "md", "json", "xml", "html", "css", "js", "ts", "py", "rb", "go", "rs", "java", "c", "cpp", "h", "yaml", "yml", "toml", "ini", "cfg", "conf", "log", "csv", "sql", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd"],
-      name: "Text File",
-      description: "Text file",
-      role: "Editor",
-    },
-    {
-      ext: ["zip", "tar", "gz", "tgz", "jar", "war", "ear", "apk"],
-      name: "Archive",
-      description: "Archive file",
-      role: "Viewer",
-    },
-    {
-      ext: ["pdf"],
-      name: "PDF Document",
-      description: "PDF file",
-      role: "Viewer",
-    },
-    {
-      ext: ["docx"],
-      name: "Word Document",
-      description: "Word document",
-      role: "Viewer",
-    },
-    {
-      ext: ["xlsx", "xls"],
-      name: "Spreadsheet",
-      description: "Spreadsheet file",
-      role: "Viewer",
-    },
-    {
-      ext: ["sqlite", "db", "sqlite3"],
-      name: "SQLite Database",
-      description: "SQLite database",
-      role: "Viewer",
-    },
+    ...["txt", "md", "json", "xml", "html", "css", "js", "ts", "py", "rb", "go", "rs", "java", "c", "cpp", "h", "yaml", "yml", "toml", "ini", "cfg", "conf", "log", "csv", "sql", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd"]
+      .map((ext) => ({ ext, name: "Text File", description: "Text file", role: "Editor" })),
+    ...["zip", "tar", "gz", "tgz", "jar", "war", "ear", "apk"]
+      .map((ext) => ({ ext, name: "Archive", description: "Archive file", role: "Viewer" })),
+    { ext: "pdf", name: "PDF Document", description: "PDF file", role: "Viewer" },
+    { ext: "docx", name: "Word Document", description: "Word document", role: "Viewer" },
+    ...["xlsx", "xls"]
+      .map((ext) => ({ ext, name: "Spreadsheet", description: "Spreadsheet file", role: "Viewer" })),
+    ...["sqlite", "db", "sqlite3"]
+      .map((ext) => ({ ext, name: "SQLite Database", description: "SQLite database", role: "Viewer" })),
   ],
   publish: {
     provider: "github",

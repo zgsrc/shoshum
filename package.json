@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "clean": "rm -rf .next .turbo node_modules/.cache out dist-electron",
+    "clean": "node clean.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "electron:dev": "cross-env ELECTRON_DEV=1 electron .",

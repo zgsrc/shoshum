@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 
 const GITHUB_REPO = "zgsrc/shoshum";
 const RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
-const LATEST_URL = `${RELEASES_URL}/latest/download`;
+const API_LATEST_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 
 type Platform = "mac" | "windows" | "linux" | null;
 
@@ -17,6 +17,17 @@ function detectPlatform(): Platform {
   return null;
 }
 
+interface ReleaseAsset {
+  name: string;
+  browser_download_url: string;
+}
+
+interface ReleaseInfo {
+  tag_name: string;
+  html_url: string;
+  assets: ReleaseAsset[];
+}
+
 interface DownloadOption {
   platform: Platform;
   label: string;
@@ -24,6 +35,11 @@ interface DownloadOption {
   fileName: string;
   icon: React.ReactNode;
   variants?: { label: string; fileName: string }[];
+}
+
+function findAssetUrl(assets: ReleaseAsset[], fileName: string): string | null {
+  const asset = assets.find((a) => a.name === fileName);
+  return asset?.browser_download_url ?? null;
 }
 
 const DOWNLOADS: DownloadOption[] = [
@@ -46,7 +62,7 @@ const DOWNLOADS: DownloadOption[] = [
     platform: "windows",
     label: "Windows",
     description: "Windows 10 or later",
-    fileName: "Shoshum-Setup.exe",
+    fileName: "Shoshum-Setup-x64.exe",
     icon: (
       <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
         <path d="M3 12V6.75l8-1.25V12H3zm0 .5h8v6.5l-8-1.25V12.5zM11.5 12V5.35l9.5-1.6V12h-9.5zm0 .5h9.5v8.25l-9.5-1.6V12.5z" />
@@ -80,11 +96,18 @@ const DOWNLOADS: DownloadOption[] = [
 function DownloadCard({
   option,
   isPrimary,
+  release,
 }: {
   option: DownloadOption;
   isPrimary: boolean;
+  release: ReleaseInfo | null;
 }) {
   const [showVariants, setShowVariants] = useState(false);
+
+  const primaryUrl = release
+    ? findAssetUrl(release.assets, option.fileName)
+    : null;
+  const disabled = release !== null && primaryUrl === null;
 
   return (
     <div
@@ -97,6 +120,7 @@ function DownloadCard({
         boxShadow: isPrimary
           ? "0 0 24px rgba(88, 166, 255, 0.15)"
           : undefined,
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       <div style={{ color: isPrimary ? "var(--sh-accent-blue)" : "var(--sh-text2)" }}>
@@ -110,27 +134,40 @@ function DownloadCard({
           {option.description}
         </p>
       </div>
-      <a
-        href={`${LATEST_URL}/${option.fileName}`}
-        className="px-6 py-2.5 rounded-lg text-sm font-medium transition-colors inline-block"
-        style={{
-          backgroundColor: isPrimary ? "var(--sh-btn-green)" : "var(--sh-bg-active)",
-          color: isPrimary ? "#fff" : "var(--sh-text)",
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = isPrimary
-            ? "var(--sh-btn-green-hover)"
-            : "var(--sh-bg-hover)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = isPrimary
-            ? "var(--sh-btn-green)"
-            : "var(--sh-bg-active)";
-        }}
-      >
-        Download
-      </a>
-      {option.variants && option.variants.length > 1 && (
+      {primaryUrl ? (
+        <a
+          href={primaryUrl}
+          className="px-6 py-2.5 rounded-lg text-sm font-medium transition-colors inline-block"
+          style={{
+            backgroundColor: isPrimary ? "var(--sh-btn-green)" : "var(--sh-bg-active)",
+            color: isPrimary ? "#fff" : "var(--sh-text)",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = isPrimary
+              ? "var(--sh-btn-green-hover)"
+              : "var(--sh-bg-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = isPrimary
+              ? "var(--sh-btn-green)"
+              : "var(--sh-bg-active)";
+          }}
+        >
+          Download
+        </a>
+      ) : (
+        <span
+          className="px-6 py-2.5 rounded-lg text-sm font-medium inline-block"
+          style={{
+            backgroundColor: "var(--sh-bg-active)",
+            color: "var(--sh-text-muted)",
+            cursor: "default",
+          }}
+        >
+          Not yet available
+        </span>
+      )}
+      {primaryUrl && option.variants && option.variants.length > 1 && (
         <div className="w-full">
           <button
             onClick={() => setShowVariants(!showVariants)}
@@ -143,18 +180,20 @@ function DownloadCard({
           </button>
           {showVariants && (
             <div className="mt-2 flex flex-col gap-1">
-              {option.variants.map((v) => (
-                <a
-                  key={v.fileName}
-                  href={`${LATEST_URL}/${v.fileName}`}
-                  className="text-xs py-1 px-2 rounded transition-colors block"
-                  style={{ color: "var(--sh-accent-blue)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-bg-hover)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                >
-                  {v.label}
-                </a>
-              ))}
+              {option.variants
+                .filter((v) => release && findAssetUrl(release.assets, v.fileName))
+                .map((v) => (
+                  <a
+                    key={v.fileName}
+                    href={findAssetUrl(release!.assets, v.fileName)!}
+                    className="text-xs py-1 px-2 rounded transition-colors block"
+                    style={{ color: "var(--sh-accent-blue)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-bg-hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                  >
+                    {v.label}
+                  </a>
+                ))}
             </div>
           )}
         </div>
@@ -165,9 +204,21 @@ function DownloadCard({
 
 export default function DownloadPage() {
   const [platform, setPlatform] = useState<Platform>(null);
+  const [release, setRelease] = useState<ReleaseInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     setPlatform(detectPlatform());
+
+    fetch(API_LATEST_URL)
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json();
+      })
+      .then((data: ReleaseInfo) => setRelease(data))
+      .catch(() => setFetchError(true))
+      .finally(() => setLoading(false));
   }, []);
 
   const sorted = [...DOWNLOADS].sort((a, b) => {
@@ -175,6 +226,8 @@ export default function DownloadPage() {
     if (b.platform === platform) return 1;
     return 0;
   });
+
+  const noRelease = !loading && (fetchError || !release);
 
   return (
     <div
@@ -222,15 +275,72 @@ export default function DownloadPage() {
             A technical file viewer and editor that runs completely offline. Opens anything, edits everything — no internet required.
           </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
-            {sorted.map((opt) => (
-              <DownloadCard
-                key={opt.platform}
-                option={opt}
-                isPrimary={opt.platform === platform}
-              />
-            ))}
-          </div>
+          {loading ? (
+            <p className="text-sm py-12" style={{ color: "var(--sh-text-muted)" }}>
+              Checking for releases…
+            </p>
+          ) : noRelease ? (
+            <div
+              className="rounded-xl p-8 mb-12 mx-auto max-w-md"
+              style={{
+                backgroundColor: "var(--sh-bg2)",
+                border: "1px solid var(--sh-border)",
+              }}
+            >
+              <p className="text-sm mb-3" style={{ color: "var(--sh-text)" }}>
+                No releases available yet
+              </p>
+              <p className="text-xs mb-4" style={{ color: "var(--sh-text2)" }}>
+                Desktop builds haven&apos;t been published. You can use Shoshum in your browser right now, or build from source.
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <a
+                  href="/"
+                  className="px-5 py-2 rounded-lg text-sm font-medium transition-colors inline-block"
+                  style={{
+                    backgroundColor: "var(--sh-btn-green)",
+                    color: "#fff",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-btn-green-hover)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-btn-green)")}
+                >
+                  Use in browser
+                </a>
+                <a
+                  href={`https://github.com/${GITHUB_REPO}#readme`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-5 py-2 rounded-lg text-sm font-medium transition-colors inline-block"
+                  style={{
+                    backgroundColor: "var(--sh-bg-active)",
+                    color: "var(--sh-text)",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-bg-hover)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-bg-active)")}
+                >
+                  Build from source
+                </a>
+              </div>
+            </div>
+          ) : (
+            <>
+              {release && (
+                <p className="text-xs mb-4" style={{ color: "var(--sh-text-muted)" }}>
+                  Latest release: {release.tag_name}
+                </p>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
+                {sorted.map((opt) => (
+                  <DownloadCard
+                    key={opt.platform}
+                    option={opt}
+                    isPrimary={opt.platform === platform}
+                    release={release}
+                  />
+                ))}
+              </div>
+            </>
+          )}
 
           <div className="flex flex-col items-center gap-4">
             <a

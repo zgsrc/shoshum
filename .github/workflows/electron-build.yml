@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Electron icons
+        run: npm run electron:generate-icons
+
       - name: Build static export
         run: npm run electron:build-web
 
@@ -51,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Electron icons
+        run: npm run electron:generate-icons
+
       - name: Build static export
         run: npm run electron:build-web
 
@@ -77,6 +83,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Generate Electron icons
+        run: npm run electron:generate-icons
 
       - name: Build static export
         run: npm run electron:build-web

@@ -7,6 +7,7 @@ const {
   net,
   ipcMain,
   shell,
+  nativeImage,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -39,6 +40,16 @@ function getOutDir() {
     return path.join(process.resourcesPath, "out");
   }
   return path.join(__dirname, "..", "out");
+}
+
+function getAppIcon() {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "icon.png")
+    : path.join(__dirname, "resources", "icon.png");
+  if (!fs.existsSync(iconPath)) return undefined;
+
+  const icon = nativeImage.createFromPath(iconPath);
+  return icon.isEmpty() ? undefined : icon;
 }
 
 function resolveFilePath(requestPath) {
@@ -76,6 +87,11 @@ function registerProtocol() {
 }
 
 function createWindow() {
+  const appIcon = getAppIcon();
+  if (process.platform === "darwin" && appIcon && app.dock) {
+    app.dock.setIcon(appIcon);
+  }
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -83,6 +99,7 @@ function createWindow() {
     minHeight: 400,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     backgroundColor: "#0d1117",
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

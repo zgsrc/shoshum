@@ -1,4 +1,8 @@
 /** @type {import('electron-builder').Configuration} */
+const iconPng = "electron/resources/icon.png";
+const iconIco = "electron/resources/icon.ico";
+const iconIcns = "electron/resources/icon.icns";
+
 module.exports = {
   appId: "com.zgsrc.shoshum",
   productName: "Shoshum",
@@ -6,16 +10,21 @@ module.exports = {
     output: "dist-electron",
     buildResources: "electron/resources",
   },
-  files: ["electron/**/*", "!**/node_modules/**/*"],
+  files: ["electron/**/*", "!electron/resources/**/*", "!**/node_modules/**/*"],
   extraResources: [
     {
       from: "out",
       to: "out",
       filter: ["**/*"],
     },
+    {
+      from: iconPng,
+      to: "icon.png",
+    },
   ],
   asar: true,
   mac: {
+    icon: iconIcns,
     target: [
       { target: "dmg", arch: ["universal"] },
       { target: "zip", arch: ["universal"] },
@@ -32,6 +41,7 @@ module.exports = {
     ],
   },
   win: {
+    icon: iconIco,
     target: [
       { target: "nsis", arch: ["x64", "arm64"] },
       { target: "portable", arch: ["x64"] },
@@ -48,6 +58,7 @@ module.exports = {
     artifactName: "Shoshum-Portable-${arch}.${ext}",
   },
   linux: {
+    icon: iconPng,
     target: [
       { target: "AppImage", arch: ["x64", "arm64"] },
       { target: "deb", arch: ["x64", "arm64"] },

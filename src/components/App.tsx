@@ -62,6 +62,7 @@ const VIEW_MODE_LABELS: Record<ViewMode, string> = {
 
 const THEME_STORAGE_KEY = "shoshum-theme";
 const THEME_CHANGE_EVENT = "shoshum-theme-change";
+const THEME_ORDER: readonly ThemePreference[] = ["auto", "light", "dark"];
 
 function readStoredTheme(): ThemePreference {
   if (typeof window === "undefined") return "auto";
@@ -76,6 +77,33 @@ function getSystemTheme(): ResolvedTheme {
 
 function resolveTheme(pref: ThemePreference): ResolvedTheme {
   return pref === "auto" ? getSystemTheme() : pref;
+}
+
+function getNextThemePreference(pref: ThemePreference): ThemePreference {
+  return THEME_ORDER[(THEME_ORDER.indexOf(pref) + 1) % THEME_ORDER.length];
+}
+
+function formatThemePreference(pref: ThemePreference): string {
+  return pref[0].toUpperCase() + pref.slice(1);
+}
+
+function getThemeControlTitle(pref: ThemePreference, resolved: ResolvedTheme): string {
+  const current = pref === "auto" ? `Auto (${formatThemePreference(resolved)})` : formatThemePreference(pref);
+  return `Theme: ${current} (click to switch to ${formatThemePreference(getNextThemePreference(pref))})`;
+}
+
+function applyResolvedTheme(resolved: ResolvedTheme): void {
+  if (typeof document === "undefined") return;
+
+  document.documentElement.setAttribute("data-theme", resolved);
+  const themeColor = resolved === "light" ? "#ffffff" : "#0d1117";
+  let meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.setAttribute("name", "theme-color");
+    document.head.appendChild(meta);
+  }
+  meta.setAttribute("content", themeColor);
 }
 
 function subscribeToThemeChange(callback: () => void): () => void {
@@ -296,24 +324,15 @@ function useTheme(): [ThemePreference, ResolvedTheme, () => void] {
   const resolved: ResolvedTheme = preference === "auto" ? systemTheme : preference;
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", resolved);
-    const themeColor = resolved === "light" ? "#ffffff" : "#0d1117";
-    let meta = document.querySelector('meta[name="theme-color"]');
-    if (!meta) {
-      meta = document.createElement("meta");
-      meta.setAttribute("name", "theme-color");
-      document.head.appendChild(meta);
-    }
-    meta.setAttribute("content", themeColor);
+    applyResolvedTheme(resolved);
   }, [resolved]);
 
   const toggle = useCallback(() => {
-    const order: ThemePreference[] = ["auto", "light", "dark"];
-    const next = order[(order.indexOf(preference) + 1) % order.length];
+    const next = getNextThemePreference(readStoredTheme());
     localStorage.setItem(THEME_STORAGE_KEY, next);
-    document.documentElement.setAttribute("data-theme", next === "auto" ? getSystemTheme() : next);
+    applyResolvedTheme(resolveTheme(next));
     window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
-  }, [preference]);
+  }, []);
 
   return [preference, resolved, toggle];
 }
@@ -343,6 +362,12 @@ function AutoThemeIcon() {
       <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   );
+}
+
+function ThemePreferenceIcon({ preference }: { preference: ThemePreference }) {
+  if (preference === "auto") return <AutoThemeIcon />;
+  if (preference === "light") return <SunIcon />;
+  return <MoonIcon />;
 }
 
 // ── Toolbar Button ──────────────────────────────────────────
@@ -388,10 +413,11 @@ function TBtn({
 
 // ── Landing Page ────────────────────────────────────────────
 
-function LandingPage({ onFile, onOpenPicker, themePreference, onToggleTheme, recentFiles, onClearRecent }: {
+function LandingPage({ onFile, onOpenPicker, themePreference, theme, onToggleTheme, recentFiles, onClearRecent }: {
   onFile: (file: File, handle: FileSystemFileHandle | null) => void;
   onOpenPicker: () => void;
   themePreference: ThemePreference;
+  theme: ResolvedTheme;
   onToggleTheme: () => void;
   recentFiles: RecentFile[];
   onClearRecent: () => void;
@@ -405,8 +431,8 @@ function LandingPage({ onFile, onOpenPicker, themePreference, onToggleTheme, rec
         <div className="w-8" />
         <h1 className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)" }}>shoshum</h1>
         <div className="sh-titlebar-nodrag">
-          <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
-            {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
+          <TBtn onClick={onToggleTheme} title={getThemeControlTitle(themePreference, theme)}>
+            <ThemePreferenceIcon preference={themePreference} />
           </TBtn>
         </div>
       </header>
@@ -1340,7 +1366,7 @@ export default function App() {
     }
     cmds.push(
       { id: "search-files", label: "Search Across Open Files", shortcut: "⌘⇧F", action: () => setShowGlobalSearch(true) },
-      { id: "theme", label: `Theme: ${themePreference} (cycle to ${themePreference === "auto" ? "light" : themePreference === "light" ? "dark" : "auto"})`, action: toggleTheme },
+      { id: "theme", label: getThemeControlTitle(themePreference, theme), action: toggleTheme },
       { id: "settings", label: "Open Settings", action: () => setShowSettings(true) },
       { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "?", action: () => setShowShortcuts(true) },
     );
@@ -1376,7 +1402,7 @@ export default function App() {
       }
     }
     return cmds;
-  }, [activeTab, themePreference, settings, handleOpen, handleSave, closeTab, closeAllTabs, toggleTheme, handleFormat, handleMinify, handleCompareWithSaved, handleConvertLineEndings, handleChangeEncoding, handleSettingsChange, updateTab]);
+  }, [activeTab, themePreference, theme, settings, handleOpen, handleSave, closeTab, closeAllTabs, toggleTheme, handleFormat, handleMinify, handleCompareWithSaved, handleConvertLineEndings, handleChangeEncoding, handleSettingsChange, updateTab]);
 
   // ── Derived state ───────────────────────────────
 
@@ -1405,6 +1431,7 @@ export default function App() {
           onFile={loadFile}
           onOpenPicker={handleOpen}
           themePreference={themePreference}
+          theme={theme}
           onToggleTheme={toggleTheme}
           recentFiles={recentFiles}
           onClearRecent={() => { clearRecentFiles(); setRecentFiles([]); }}
@@ -1602,8 +1629,8 @@ function ActiveTabView({ tab, theme, themePreference, settings, cursorPos, lineE
           <TBtn onClick={onShowShortcuts} title="Keyboard Shortcuts (?)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
           </TBtn>
-          <TBtn onClick={onToggleTheme} title={`Theme: ${themePreference} (click to cycle)`}>
-            {themePreference === "auto" ? <AutoThemeIcon /> : themePreference === "dark" ? <SunIcon /> : <MoonIcon />}
+          <TBtn onClick={onToggleTheme} title={getThemeControlTitle(themePreference, theme)}>
+            <ThemePreferenceIcon preference={themePreference} />
           </TBtn>
           <TBtn onClick={onClose} title="Close tab">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>

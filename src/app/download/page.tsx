@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect } from "react";
 
 const GITHUB_REPO = "zgsrc/shoshum";
@@ -209,7 +210,9 @@ export default function DownloadPage() {
   const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
-    setPlatform(detectPlatform());
+    const frame = requestAnimationFrame(() => {
+      setPlatform(detectPlatform());
+    });
 
     fetch(API_LATEST_URL)
       .then((res) => {
@@ -219,6 +222,8 @@ export default function DownloadPage() {
       .then((data: ReleaseInfo) => setRelease(data))
       .catch(() => setFetchError(true))
       .finally(() => setLoading(false));
+
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   const sorted = [...DOWNLOADS].sort((a, b) => {
@@ -241,9 +246,9 @@ export default function DownloadPage() {
           borderBottom: "1px solid var(--sh-border)",
         }}
       >
-        <a href="/" className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)", textDecoration: "none" }}>
+        <Link href="/" className="text-sm font-semibold tracking-wide font-mono" style={{ color: "var(--sh-text)", textDecoration: "none" }}>
           shoshum
-        </a>
+        </Link>
         <a
           href={`https://github.com/${GITHUB_REPO}`}
           target="_blank"
@@ -294,7 +299,7 @@ export default function DownloadPage() {
                 Desktop builds haven&apos;t been published. You can use Shoshum in your browser right now, or build from source.
               </p>
               <div className="flex items-center justify-center gap-4">
-                <a
+                <Link
                   href="/"
                   className="px-5 py-2 rounded-lg text-sm font-medium transition-colors inline-block"
                   style={{
@@ -305,7 +310,7 @@ export default function DownloadPage() {
                   onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--sh-btn-green)")}
                 >
                   Use in browser
-                </a>
+                </Link>
                 <a
                   href={`https://github.com/${GITHUB_REPO}#readme`}
                   target="_blank"
@@ -372,9 +377,9 @@ export default function DownloadPage() {
           color: "var(--sh-text-muted)",
         }}
       >
-        <a href="/" style={{ color: "var(--sh-text-muted)", textDecoration: "none" }}>
+        <Link href="/" style={{ color: "var(--sh-text-muted)", textDecoration: "none" }}>
           ← Use shoshum in your browser
-        </a>
+        </Link>
       </footer>
     </div>
   );

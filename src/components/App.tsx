@@ -32,9 +32,9 @@ import { getRecentFiles, addRecentFile, clearRecentFiles, type RecentFile } from
 import { prettyPrintJSON, minifyJSON, prettyPrintXML, minifyXML } from "@/lib/formatters";
 import type { TestFixture, TestFixtureId } from "@/lib/testFixtures";
 import ArchiveBrowser from "@/components/ArchiveBrowser";
+import BinaryInspector from "./BinaryInspector";
 import CodeEditor, { type CodeEditorRef, type EditorSnapshot } from "./CodeEditor";
 import DisplayViewer from "./DisplayViewer";
-import HexViewer from "./HexViewer";
 import MarkdownPreview from "./MarkdownPreview";
 import TabBar, { type TabInfo } from "./TabBar";
 import CommandPalette, { type Command } from "./CommandPalette";
@@ -1667,7 +1667,12 @@ function ActiveTabView({ tab, theme, themePreference, settings, cursorPos, lineE
             isBinary={tab.fileData.isBinary}
           />
         ) : mode === "binary" ? (
-          <HexViewer bytes={tab.currentBytes} readOnly={tab.readOnly} onChange={(bytes) => onUpdateTab(tab.id, { currentBytes: bytes, modified: true })} />
+          <BinaryInspector
+            name={tab.fileData.name}
+            bytes={tab.currentBytes}
+            readOnly={tab.readOnly}
+            onChange={(bytes) => onUpdateTab(tab.id, { currentBytes: bytes, modified: true })}
+          />
         ) : isMarkdown && tab.markdownMode === "preview" ? (
           <MarkdownPreview content={tab.currentContent} />
         ) : isMarkdown && tab.markdownMode === "split" ? (

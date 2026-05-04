@@ -25,9 +25,13 @@
   --sh-selection: #1f6feb44;
   --sh-drag-bg: #1f6feb15;
   --sh-hex-edit-bg: #1f6feb;
+  --sh-hex-edit-text: #ffffff;
   --sh-hex-zero: #484f58;
   --sh-hex-byte: #c9d1d9;
   --sh-hex-ascii: #7ee787;
+  --sh-hex-selection-bg: #1f6feb44;
+  --sh-hex-range-bg: #d2992233;
+  --sh-hex-cursor-ring: #58a6ff;
   --sh-scrollbar-track: #0d1117;
   --sh-scrollbar-thumb: #30363d;
   --sh-scrollbar-hover: #484f58;
@@ -51,9 +55,13 @@
   --sh-selection: #0969da22;
   --sh-drag-bg: #0969da0a;
   --sh-hex-edit-bg: #0969da;
+  --sh-hex-edit-text: #ffffff;
   --sh-hex-zero: #8c959f;
   --sh-hex-byte: #1f2328;
   --sh-hex-ascii: #1a7f37;
+  --sh-hex-selection-bg: #0969da22;
+  --sh-hex-range-bg: #9a670022;
+  --sh-hex-cursor-ring: #0969da;
   --sh-scrollbar-track: #f6f8fa;
   --sh-scrollbar-thumb: #d0d7de;
   --sh-scrollbar-hover: #8c959f;

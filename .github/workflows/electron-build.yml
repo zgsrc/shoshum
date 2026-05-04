@@ -23,6 +23,66 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify macOS signing secrets
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          require_secret() {
+            if [ -z "${!1}" ]; then
+              echo "::error::$1 is required for notarized macOS releases."
+              missing=1
+            fi
+          }
+
+          require_secret CSC_LINK
+          require_secret CSC_KEY_PASSWORD
+
+          if [ -n "$APPLE_API_KEY_BASE64" ] || [ -n "$APPLE_API_KEY_ID" ] || [ -n "$APPLE_API_ISSUER" ]; then
+            require_secret APPLE_API_KEY_BASE64
+            require_secret APPLE_API_KEY_ID
+            require_secret APPLE_API_ISSUER
+          elif [ -n "$APPLE_ID" ] || [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -n "$APPLE_TEAM_ID" ]; then
+            require_secret APPLE_ID
+            require_secret APPLE_APP_SPECIFIC_PASSWORD
+            require_secret APPLE_TEAM_ID
+          else
+            echo "::error::Notarization credentials are required. Prefer APPLE_API_KEY_BASE64, APPLE_API_KEY_ID, and APPLE_API_ISSUER; alternatively set APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, and APPLE_TEAM_ID."
+            missing=1
+          fi
+
+          exit "$missing"
+
+      - name: Prepare App Store Connect API key
+        shell: bash
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          if [ -z "$APPLE_API_KEY_BASE64" ]; then
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          key_path = Path(os.environ["RUNNER_TEMP"]) / f"AuthKey_{os.environ['APPLE_API_KEY_ID']}.p8"
+          key_path.write_bytes(base64.b64decode(os.environ["APPLE_API_KEY_BASE64"]))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"APPLE_API_KEY={key_path}\n")
+          PY
+          chmod 600 "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+
       - name: Generate Electron icons
         run: npm run electron:generate-icons
 
@@ -31,6 +91,15 @@ jobs:
 
       - name: Build Electron (macOS)
         run: npx electron-builder --config electron-builder.config.js --mac --publish never
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

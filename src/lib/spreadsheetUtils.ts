@@ -1,5 +1,3 @@
-import type { Row } from "read-excel-file/browser";
-
 export interface WorkbookPreview {
   sheets: string[];
   tables: Record<string, string[][]>;
@@ -7,7 +5,7 @@ export interface WorkbookPreview {
 
 export interface ParsedWorkbookSheet {
   name?: string | null;
-  rows: Row[];
+  rows: unknown[][];
 }
 
 export const MAX_SPREADSHEET_PREVIEW_BYTES = 12 * 1024 * 1024;
@@ -49,7 +47,7 @@ export function buildWorkbookPreview(
   return { sheets, tables };
 }
 
-function normalizeWorksheetData(rows: Row[]): string[][] {
+function normalizeWorksheetData(rows: unknown[][]): string[][] {
   return rows.map((row) => Array.from(row, (value) => formatCellValue(value)));
 }
 

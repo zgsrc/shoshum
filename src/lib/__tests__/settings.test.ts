@@ -58,7 +58,7 @@ describe("loadSettings", () => {
     mockStorage["shoshum-settings"] = JSON.stringify({ fontSize: 14, unknownProp: "hello" });
     const s = loadSettings();
     expect(s.fontSize).toBe(14);
-    expect((s as Record<string, unknown>)["unknownProp"]).toBe("hello");
+    expect((s as unknown as Record<string, unknown>)["unknownProp"]).toBe("hello");
   });
 });
 

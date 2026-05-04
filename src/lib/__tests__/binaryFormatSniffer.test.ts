@@ -3,20 +3,49 @@ import { flattenBinaryFields, sniffBinaryFormat } from "../binaryFormatSniffer";
 import { getTestFixtureById } from "../testFixtures";
 import { BINARY_ASSET_FIXTURES, decodeBinaryAsset, getBinaryAssetFixture } from "./binaryAssetFixtures";
 
+const BUNDLED_PASSWORD_FIXTURE_IDS = ["locked-pdf", "locked-zip"] as const;
+
 describe("sniffBinaryFormat", () => {
   it.each(BINARY_ASSET_FIXTURES)(
     "detects $expectedKind from real fixture $fileName",
     ({ base64, expectedKind, fileName }) => {
       const bytes = decodeBinaryAsset(base64);
       const summary = sniffBinaryFormat(bytes, fileName);
-      const fields = flattenBinaryFields(summary.fields);
 
       expect(summary.kind).toBe(expectedKind);
-      expect(fields.length).toBeGreaterThan(0);
-      for (const field of fields) {
-        expect(field.offset).toBeGreaterThanOrEqual(0);
-        expect(field.length).toBeGreaterThanOrEqual(0);
-        expect(field.offset + field.length).toBeLessThanOrEqual(bytes.length);
+      expect(flattenBinaryFields(summary.fields).length).toBeGreaterThan(0);
+      expectFieldsInBounds(summary.fields, bytes.length);
+    }
+  );
+
+  it.each(BINARY_ASSET_FIXTURES)(
+    "does not throw or produce out-of-bounds fields for truncated $fileName",
+    ({ base64, fileName }) => {
+      const bytes = decodeBinaryAsset(base64);
+      const sampleLengths = new Set([
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        12,
+        16,
+        24,
+        32,
+        64,
+        265,
+        Math.max(0, bytes.length - 1),
+        bytes.length,
+      ]);
+
+      for (const length of sampleLengths) {
+        const truncated = bytes.slice(0, Math.min(length, bytes.length));
+        const summary = sniffBinaryFormat(truncated, fileName);
+        expectFieldsInBounds(summary.fields, truncated.length);
       }
     }
   );
@@ -37,6 +66,20 @@ describe("sniffBinaryFormat", () => {
     expect(summary.kind).toBe("zip");
     expect(summary.metadata).toContainEqual({ label: "First entry", value: "shoshum-archive-source.txt" });
   });
+
+  it.each(BUNDLED_PASSWORD_FIXTURE_IDS)(
+    "does not throw or produce out-of-bounds fields for truncated bundled fixture %s",
+    (id) => {
+      const fixture = getTestFixtureById(id);
+      const bytes = decodeBinaryAsset(fixture.base64);
+
+      for (const length of [0, 1, 4, 8, 16, 32, 64, Math.max(0, bytes.length - 1), bytes.length]) {
+        const truncated = bytes.slice(0, Math.min(length, bytes.length));
+        const summary = sniffBinaryFormat(truncated, fixture.fileName);
+        expectFieldsInBounds(summary.fields, truncated.length);
+      }
+    }
+  );
 
   it("parses format-specific details from fixture assets", () => {
     const png = fixtureSummary("png-1x1");
@@ -60,10 +103,19 @@ describe("sniffBinaryFormat", () => {
     const summary = sniffBinaryFormat(new Uint8Array([1, 2, 3]), "mystery.bin");
     expect(summary.kind).toBe("unknown");
     expect(summary.fields[0]?.name).toBe("First bytes");
+    expectFieldsInBounds(summary.fields, 3);
   });
 });
 
 function fixtureSummary(id: string) {
   const fixture = getBinaryAssetFixture(id);
   return sniffBinaryFormat(decodeBinaryAsset(fixture.base64), fixture.fileName);
+}
+
+function expectFieldsInBounds(fields: ReturnType<typeof flattenBinaryFields>, byteLength: number): void {
+  for (const field of flattenBinaryFields(fields)) {
+    expect(field.offset).toBeGreaterThanOrEqual(0);
+    expect(field.length).toBeGreaterThanOrEqual(0);
+    expect(field.offset + field.length).toBeLessThanOrEqual(byteLength);
+  }
 }

@@ -244,6 +244,12 @@ function parseZip(bytes: Uint8Array): BinaryFormatSummary | null {
   const nameLength = bytes.length >= 28 ? readUInt16LE(bytes, 26) : 0;
   const extraLength = bytes.length >= 30 ? readUInt16LE(bytes, 28) : 0;
   const filename = bytes.length >= 30 + nameLength ? readAscii(bytes, 30, nameLength) : "";
+  const children = [
+    field("zip-signature", "Signature", 0, 4, "PK\\x03\\x04"),
+    maybeField(bytes, "zip-method", "Compression method", 8, 2, method.toString()),
+    maybeField(bytes, "zip-compressed-size", "Compressed size", 18, 4, compressedSize.toLocaleString()),
+    maybeField(bytes, "zip-filename", "Filename", 30, nameLength, filename || undefined),
+  ].filter((candidate): candidate is BinaryField => candidate !== null);
   const fields: BinaryField[] = [
     {
       id: "zip-local-header",
@@ -251,12 +257,7 @@ function parseZip(bytes: Uint8Array): BinaryFormatSummary | null {
       offset: 0,
       length: Math.min(30 + nameLength + extraLength, bytes.length),
       value: filename || "first entry",
-      children: [
-        field("zip-signature", "Signature", 0, 4, "PK\\x03\\x04"),
-        field("zip-method", "Compression method", 8, 2, method.toString()),
-        field("zip-compressed-size", "Compressed size", 18, 4, compressedSize.toLocaleString()),
-        field("zip-filename", "Filename", 30, nameLength, filename || undefined),
-      ],
+      children,
     },
   ];
 
@@ -308,8 +309,8 @@ function parseTar(bytes: Uint8Array): BinaryFormatSummary | null {
   const sizeOctal = readNullTerminatedAscii(bytes, 124, 12).trim();
   const size = Number.parseInt(sizeOctal || "0", 8);
   return summary("tar", "tar archive", "POSIX tar archive with 512-byte header records.", "application/x-tar", [
-    field("tar-header", "First file header", 0, 512, name || "entry"),
-    field("tar-magic", "ustar magic", 257, 6, readAscii(bytes, 257, 6)),
+    field("tar-header", "First file header", 0, Math.min(512, bytes.length), name || "entry"),
+    field("tar-magic", "ustar magic", 257, availableLength(bytes, 257, 6), readAscii(bytes, 257, 6)),
   ], [
     { label: "First entry", value: name || "unknown" },
     { label: "First size", value: Number.isNaN(size) ? "unknown" : size.toLocaleString() },
@@ -321,11 +322,13 @@ function parseSqlite(bytes: Uint8Array): BinaryFormatSummary | null {
 
   const pageSize = bytes.length >= 18 ? readUInt16BE(bytes, 16) || 65536 : 0;
   const pageCount = bytes.length >= 32 ? readUInt32BE(bytes, 28) : 0;
-  return summary("sqlite", "SQLite database", "SQLite database file with a 100-byte database header.", "application/vnd.sqlite3", [
+  const fields = [
     field("sqlite-header", "Database header", 0, Math.min(100, bytes.length), "SQLite format 3"),
-    field("sqlite-page-size", "Page size", 16, 2, pageSize.toLocaleString()),
-    field("sqlite-page-count", "Page count", 28, 4, pageCount.toLocaleString()),
-  ], [
+    maybeField(bytes, "sqlite-page-size", "Page size", 16, 2, pageSize.toLocaleString()),
+    maybeField(bytes, "sqlite-page-count", "Page count", 28, 4, pageCount.toLocaleString()),
+  ].filter((candidate): candidate is BinaryField => candidate !== null);
+
+  return summary("sqlite", "SQLite database", "SQLite database file with a 100-byte database header.", "application/vnd.sqlite3", fields, [
     { label: "Page size", value: `${pageSize.toLocaleString()} bytes` },
     { label: "Page count", value: pageCount.toLocaleString() },
   ]);
@@ -362,10 +365,12 @@ function parseElf(bytes: Uint8Array): BinaryFormatSummary | null {
 
   const className = bytes[4] === 1 ? "32-bit" : bytes[4] === 2 ? "64-bit" : "unknown class";
   const endian = bytes[5] === 1 ? "little-endian" : bytes[5] === 2 ? "big-endian" : "unknown endian";
-  return summary("elf", "ELF executable", "Executable and Linkable Format binary header.", "application/x-elf", [
+  const fields = [
     field("elf-ident", "ELF identification", 0, Math.min(16, bytes.length), `${className}, ${endian}`),
-    field("elf-type", "Object type", 16, Math.min(2, Math.max(0, bytes.length - 16)), bytes.length >= 18 ? readUInt16ByEndian(bytes, 16, bytes[5] === 1).toString() : undefined),
-  ], [
+    maybeField(bytes, "elf-type", "Object type", 16, 2, bytes.length >= 18 ? readUInt16ByEndian(bytes, 16, bytes[5] === 1).toString() : undefined),
+  ].filter((candidate): candidate is BinaryField => candidate !== null);
+
+  return summary("elf", "ELF executable", "Executable and Linkable Format binary header.", "application/x-elf", fields, [
     { label: "Class", value: className },
     { label: "Endian", value: endian },
   ]);
@@ -515,6 +520,18 @@ function field(id: string, name: string, offset: number, length: number, value?:
   return { id, name, offset, length: Math.max(0, length), value };
 }
 
+function maybeField(
+  bytes: Uint8Array,
+  id: string,
+  name: string,
+  offset: number,
+  length: number,
+  value?: string
+): BinaryField | null {
+  const boundedLength = availableLength(bytes, offset, length);
+  return boundedLength > 0 ? field(id, name, offset, boundedLength, value) : null;
+}
+
 function startsWith(bytes: Uint8Array, signature: readonly number[]): boolean {
   if (bytes.length < signature.length) return false;
   return signature.every((byte, index) => bytes[index] === byte);
@@ -528,6 +545,11 @@ function readAscii(bytes: Uint8Array, offset: number, length: number): string {
     result += String.fromCharCode(bytes[i]);
   }
   return result;
+}
+
+function availableLength(bytes: Uint8Array, offset: number, requestedLength: number): number {
+  if (offset < 0 || offset >= bytes.length || requestedLength <= 0) return 0;
+  return Math.min(requestedLength, bytes.length - offset);
 }
 
 function readNullTerminatedAscii(bytes: Uint8Array, offset: number, length: number): string {

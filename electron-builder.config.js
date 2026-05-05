@@ -34,7 +34,7 @@ module.exports = {
     category: "public.app-category.developer-tools",
     darkModeSupport: true,
     hardenedRuntime: true,
-    notarize: true,
+    notarize: false,
   },
   dmg: {
     contents: [

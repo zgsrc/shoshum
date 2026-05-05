@@ -25,6 +25,7 @@ module.exports = {
   asar: true,
   mac: {
     icon: iconIcns,
+    identity: "Developer ID Application",
     target: [
       { target: "dmg", arch: ["universal"] },
       { target: "zip", arch: ["universal"] },

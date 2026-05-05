@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-mac:
     runs-on: macos-latest
+    environment: Production
     steps:
       - uses: actions/checkout@v4
 

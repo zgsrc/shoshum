@@ -1,6 +1,6 @@
 {
   "name": "shoshum",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "A technical file viewer and editor. Opens anything, edits everything.",
   "author": "zgsrc",

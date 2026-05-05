@@ -9,11 +9,14 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-mac:
     runs-on: macos-latest
     environment: Production
-    timeout-minutes: 75
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
 
@@ -100,7 +103,7 @@ jobs:
 
       - name: Notarize and staple macOS app
         shell: bash
-        timeout-minutes: 55
+        timeout-minutes: 85
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -110,10 +113,20 @@ jobs:
         run: |
           app_path="dist-electron/mac-universal/Shoshum.app"
           submit_zip="$RUNNER_TEMP/Shoshum-notarization.zip"
+          submit_json="$RUNNER_TEMP/notary-submit.json"
+          info_json="$RUNNER_TEMP/notary-info.json"
+          info_error="$RUNNER_TEMP/notary-info-error.txt"
+          notary_deadline=$((SECONDS + 75 * 60))
 
           if [ ! -d "$app_path" ]; then
             echo "::error::Expected signed app was not found at $app_path."
             exit 1
+          fi
+
+          if [ -n "$APPLE_API_KEY" ]; then
+            notary_args=(--key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+          else
+            notary_args=(--apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID")
           fi
 
           echo "Checking Developer ID signature..."
@@ -124,23 +137,69 @@ jobs:
           ditto -c -k --keepParent --sequesterRsrc "$app_path" "$submit_zip"
 
           echo "Submitting to Apple notarization service..."
-          if [ -n "$APPLE_API_KEY" ]; then
-            xcrun notarytool submit "$submit_zip" \
-              --key "$APPLE_API_KEY" \
-              --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER" \
-              --wait \
-              --timeout 45m \
-              --no-s3-acceleration
-          else
-            xcrun notarytool submit "$submit_zip" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait \
-              --timeout 45m \
-              --no-s3-acceleration
-          fi
+          xcrun notarytool submit "$submit_zip" \
+            "${notary_args[@]}" \
+            --output-format json \
+            --no-s3-acceleration > "$submit_json"
+
+          submission_id=$(python3 - "$submit_json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as submit_file:
+              print(json.load(submit_file)["id"])
+          PY
+          )
+          echo "Submission ID: $submission_id"
+
+          while true; do
+            set +e
+            xcrun notarytool info "$submission_id" \
+              "${notary_args[@]}" \
+              --output-format json > "$info_json" 2> "$info_error"
+            info_status=$?
+            set -e
+
+            if [ "$info_status" -ne 0 ]; then
+              echo "::warning::Could not fetch notarization status; retrying."
+              python3 - "$info_error" <<'PY'
+          import sys
+          from pathlib import Path
+
+          message = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").strip()
+          if message:
+              print(message)
+          PY
+            else
+              status=$(python3 - "$info_json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as info_file:
+              print(json.load(info_file)["status"])
+          PY
+          )
+              echo "Notarization status: $status"
+
+              case "$status" in
+                Accepted)
+                  break
+                  ;;
+                Invalid|Rejected)
+                  echo "::error::Apple notarization failed with status: $status"
+                  xcrun notarytool log "$submission_id" "${notary_args[@]}" || true
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [ "$SECONDS" -ge "$notary_deadline" ]; then
+              echo "::error::Apple notarization did not finish within 75 minutes for submission $submission_id."
+              exit 1
+            fi
+
+            sleep 30
+          done
 
           echo "Stapling notarization ticket..."
           xcrun stapler staple -v "$app_path"

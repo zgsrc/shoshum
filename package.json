@@ -19,6 +19,8 @@
     "electron:build-web": "cross-env NEXT_OUTPUT=export next build",
     "electron:build": "npm run electron:generate-icons && npm run electron:build-web && electron-builder --config electron-builder.config.js --publish never",
     "electron:build:mac": "npm run electron:generate-icons && npm run electron:build-web && electron-builder --config electron-builder.config.js --mac --publish never",
+    "electron:release:mac": "bash scripts/release-macos.sh",
+    "electron:verify:mac": "bash scripts/verify-macos-app.sh",
     "electron:build:win": "npm run electron:generate-icons && npm run electron:build-web && electron-builder --config electron-builder.config.js --win --publish never",
     "electron:build:linux": "npm run electron:generate-icons && npm run electron:build-web && electron-builder --config electron-builder.config.js --linux --publish never"
   },

@@ -10,7 +10,7 @@ module.exports = {
     output: "dist-electron",
     buildResources: "electron/resources",
   },
-  files: ["electron/**/*", "!electron/resources/**/*", "!**/node_modules/**/*"],
+  files: ["electron/**/*", "!electron/resources/**/*", "!electron/entitlements*.plist", "!electron/mac-sign.js", "!**/node_modules/**/*"],
   extraResources: [
     {
       from: "out",
@@ -25,7 +25,11 @@ module.exports = {
   asar: true,
   mac: {
     icon: iconIcns,
-    identity: "Developer ID Application",
+    identity: "58C04F14554D34A1D75D7CF3AD257A7F0B97FCA8",
+    sign: "electron/mac-sign.js",
+    forceCodeSigning: true,
+    entitlements: "electron/entitlements.mac.plist",
+    entitlementsInherit: "electron/entitlements.mac.inherit.plist",
     target: [
       { target: "dmg", arch: ["universal"] },
       { target: "zip", arch: ["universal"] },
